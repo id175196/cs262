@@ -9,6 +9,7 @@ directory = "C:\\Users\\Dmitri\\distributed_dropbox\\"
 private_key_loc = directory + "private_key.ppk"
 public_key_loc = directory + "public_key.PEM"
 personal_encrypter_loc = directory + "personal_encrypter.txt"
+rev_no_loc = directory + "rev_no.txt"
 
 
 # initialized pubic and private key of personal computer
@@ -20,13 +21,16 @@ def init():
     f_private = open(private_key_loc,'w')
     f_public = open(public_key_loc,'w')
     f_personal = open(personal_encrypter_loc,'w')
+    f_rev = open(rev_no_loc,'w')
     f_private.write(key.exportKey())
     f_public.write(key.publickey().exportKey())
-    f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(8)) + Random.get_random_bytes(8))
-    f_personal.write(
+    f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(8)))
+    f_personal.write(Random.get_random_bytes(8))
+    f_rev.write('1')
     f_private.close()
     f_public.close()
     f_personal.close()
+    f_rev.close();
     return
 
 def read_personal_key():
@@ -34,6 +38,21 @@ def read_personal_key():
     personal_key = s[0:8]
     iv = s[8:16]
     return (personal_key,iv)
+
+def import_private_key():
+    return RSA.importKey(open(private_key_loc, 'r').read())
+
+def import_public_key(uuid = ''):
+    return RSA.importKey(open(paste(uuid,public_key_loc,sep = '_'), 'r').read())
+
+def get_rev_number():
+    f_rev = open(rev_no_loc,'r')
+    rev_no = int(f_rev.read())
+    f_rev.close()
+    f_rev = open(rev_no_loc,'w')
+    f_rev.write(str(rev_no + 1))
+    f_rev.close()
+    return rev_no
 
 ###functions borrowed from http://www.laurentluce.com/posts/python-and-cryptography-with-pycrypto/
 
@@ -83,7 +102,13 @@ def client_decrypt(file_name_enc):
 
 def client_upload(file_name,address):
     enc_file = client_encrypt(file_name)
-    #somehow send encrypted file to the address
+    #read revision number
+    rev_no = get_rev_number()
+    #read private key in
+    private_key = import_private_key()
+    rng = Random.new().read
+    signature = private_key.sign(str(rev_no),rng)
+    #send tuple of file and signature
     return
     
 def client_download(file_name,address):
@@ -93,6 +118,17 @@ def client_download(file_name,address):
     client_decrypt(enc_file_loc)
     #remove the encrypted file
     os.remove(enc_file_loc)
+    return
+
+###some serverside functions
+def server_download(client_uuid,message):
+    (filename,f,signmessage,ver_no) = message
+    public_key = import_public_key(client_uuid)
+    if(public_key.verify(signmessage,str(ver_no))):
+        if(ver_no > cur_ver_no):
+            f_wr = open(filename,'w')
+            f_wr.write(f)
+            f_wr.close()
 
 def __main__():
     if(os.path.isdir(directory) != True):
