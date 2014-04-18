@@ -10,6 +10,17 @@ private_key_loc = directory + "private_key.ppk"
 public_key_loc = directory + "public_key.PEM"
 personal_encrypter_loc = directory + "personal_encrypter.txt"
 rev_no_loc = directory + "rev_no.txt"
+def private_foreign_key_loc(uuid):
+    return directory + uuid + '_' + "private_key.ppk"
+
+def public_foreign_key_loc(uuid):
+    return directory + uuid + '_' + "public_key.PEM"
+
+def personal_foreign_encrypter_loc(uuid):
+    return directory + uuid + '_' + "personal_encrypter.txt"
+
+def foreign_rev_no_loc(uuid):
+    return directory + uuid + '_' + "rev_no.txt"
 
 
 # initialized pubic and private key of personal computer
@@ -32,6 +43,30 @@ def init():
     f_personal.close()
     f_rev.close();
     return
+
+#initialize public and private keys of a foreign computer given the uuid.
+#this is for testing purposes ONLY!!!!
+def init_remote(uuid):
+    random_generator = Random.new().read
+    key = RSA.generate(1024, random_generator)
+    if(os.path.isdir(directory) != True):
+        os.makedirs(directory)
+    f_private = open(private_foreign_key_loc(uuid),'w')
+    f_public = open(public_foreign_key_loc(uuid),'w')
+    f_personal = open(personal_foreign_encrypter_loc(uuid),'w')
+    f_rev = open(foreign_rev_no_loc(uuid),'w')
+    f_private.write(key.exportKey())
+    f_public.write(key.publickey().exportKey())
+    f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
+    f_personal.write(Random.get_random_bytes(8))
+    f_rev.write('1')
+    f_private.close()
+    f_public.close()
+    f_personal.close()
+    f_rev.close();
+    return
+
+
 
 def read_personal_key():
     s = open(personal_encrypter_loc,'r').read()
@@ -56,14 +91,55 @@ def get_rev_number():
     f_rev.close()
     return rev_no
 
+#many of the following functions are for testing purposes only
+def read_foreign_personal_key(uuid):
+    s = open(personal_foreign_encrypter_loc(uuid),'r').read()
+    personal_key = s[0:16]
+    iv = s[16:24]
+    return (personal_key,iv)
+
+def import_foreign_private_key(uuid):
+    return RSA.importKey(open(private_foreign_key_loc(uuid), 'r').read())
+
 
 #A quick test
-message = "test! Very nice!"
-private_key = import_private_key()
-public_key = import_public_key()
-signature = private_key.sign(message,'')
-public_key.verify(message,signature)
+def test():
+    message = "test! Very nice!"
+    private_key = import_private_key()
+    public_key = import_public_key()
+    signature = private_key.sign(message,'')
+    return public_key.verify(message,signature)
 
+def complex_test():
+    init()
+    uuid = '100'
+    init_remote(uuid)
+    #the following is an excerpt of the Meissner bodies paragraph on Wikipedia's Reuleasux tetrahedron
+    full_text = "Meissner and Schilling[2] showed how to modify the Reuleaux tetrahedron to form a surface of constant width, by replacing three of its edge arcs by curved patches formed as the surfaces of rotation of a circular arc. According to which three edge arcs are replaced (three that have a common vertex or three that form a triangle) there result two noncongruent shapes that are sometimes called Meissner bodies or Meissner tetrahedra (for interactive pictures and films see Weber).[3] Bonnesen and Fenchel[4] conjectured that Meissner tetrahedra are the minimum-volume three-dimensional shapes of constant width, a conjecture which is still open.[5] In connection with this problem, Campi, Colesanti and Gronchi[6] showed that the minimum volume surface of revolution with constant width is the surface of revolution of a Reuleaux triangle through one of its symmetry axes."
+    #open file and write text to file, then close
+    f_loc = 'C:\\Users\\Dmitri\\distributed_dropbox\\complex_test.txt'
+    f = open(f_loc,'w');
+    f.write(full_text)
+    f.close()
+    #encrypt the file using local encryption key
+    f_enc = client_encrypt(f_loc)
+    f_enc_message = open(f_enc,'r').read()
+    rev_no = get_rev_number()
+    rng = Random.new().read
+    private_key = import_private_key()
+    signature = private_key.sign(str(rev_no),rng)
+    public_enc_message = public_key_encrypt(f_enc,uuid)
+    private_foreign_key = import_foreign_private_key(uuid)
+    dec_message = private_foreign_key.decrypt(public_enc_message)
+    if( dec_message != f_enc_message):
+        print("Whaat, this didn't work!")
+        print("decrypted message: " + dec_message + '\n')
+        print("original encrypted message: " + f_enc_message)
+    else:
+        print("cool, encryption and decryption worked");
+    return
+    
+complex_test()
 
 
 ###functions borrowed from http://www.laurentluce.com/posts/python-and-cryptography-with-pycrypto/
@@ -95,6 +171,10 @@ filename = 'C:\\Users\\Dmitri\\distributed_dropbox\\test.txt'
 client_encrypt(filename)
 client_decrypt(filename_enc)
 ###back to stuff I wrote
+def public_key_encrypt(f_enc,uuid):
+    public_key = import_public_key(uuid)
+    return public_key.encrypt(open(f_enc,'r').read(),32)
+
 def encrypt_filename(file_name):
     return file_name +'enc'
 def decrypt_filename(file_name_enc):
