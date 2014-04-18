@@ -3,7 +3,7 @@
 from Crypto.PublicKey import RSA
 from Crypto import Random
 from Crypto.Cipher import DES3
-import os
+import os, random, string
 
 directory = "C:\\Users\\Dmitri\\distributed_dropbox\\"
 private_key_loc = directory + "private_key.ppk"
@@ -24,7 +24,7 @@ def init():
     f_rev = open(rev_no_loc,'w')
     f_private.write(key.exportKey())
     f_public.write(key.publickey().exportKey())
-    f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(8)))
+    f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
     f_personal.write(Random.get_random_bytes(8))
     f_rev.write('1')
     f_private.close()
@@ -35,15 +35,17 @@ def init():
 
 def read_personal_key():
     s = open(personal_encrypter_loc,'r').read()
-    personal_key = s[0:8]
-    iv = s[8:16]
+    personal_key = s[0:16]
+    iv = s[16:24]
     return (personal_key,iv)
 
 def import_private_key():
     return RSA.importKey(open(private_key_loc, 'r').read())
 
 def import_public_key(uuid = ''):
-    return RSA.importKey(open(paste(uuid,public_key_loc,sep = '_'), 'r').read())
+    if uuid == '':
+        return RSA.importKey(open(public_key_loc, 'r').read())
+    return RSA.importKey(open(uuid + '_' + public_key_loc, 'r').read())
 
 def get_rev_number():
     f_rev = open(rev_no_loc,'r')
@@ -53,6 +55,16 @@ def get_rev_number():
     f_rev.write(str(rev_no + 1))
     f_rev.close()
     return rev_no
+
+
+#A quick test
+message = "test! Very nice!"
+private_key = import_private_key()
+public_key = import_public_key()
+signature = private_key.sign(message,'')
+public_key.verify(message,signature)
+
+
 
 ###functions borrowed from http://www.laurentluce.com/posts/python-and-cryptography-with-pycrypto/
 
@@ -79,14 +91,14 @@ def decrypt_file(in_filename, out_filename, chunk_size, key, iv):
                     break
                 out_file.write(des3.decrypt(chunk))
 
-
-
-
+filename = 'C:\\Users\\Dmitri\\distributed_dropbox\\test.txt'
+client_encrypt(filename)
+client_decrypt(filename_enc)
 ###back to stuff I wrote
 def encrypt_filename(file_name):
     return file_name +'enc'
 def decrypt_filename(file_name_enc):
-    return file_name_enc[0:length(file_name_enc)-3]
+    return file_name_enc[0:len(file_name_enc)-3]
 def client_encrypt(file_name):
     #first encrypt personally
     file_name_enc = encrypt_filename(file_name)
