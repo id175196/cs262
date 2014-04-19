@@ -80,7 +80,7 @@ def import_private_key():
 def import_public_key(uuid = ''):
     if uuid == '':
         return RSA.importKey(open(public_key_loc, 'r').read())
-    return RSA.importKey(open(uuid + '_' + public_key_loc, 'r').read())
+    return RSA.importKey(open(public_foreign_key_loc(uuid), 'r').read())
 
 def get_rev_number():
     f_rev = open(rev_no_loc,'r')
@@ -115,8 +115,7 @@ def complex_test():
     uuid = '100'
     init_remote(uuid)
     #the following is an excerpt of the Meissner bodies paragraph on Wikipedia's Reuleasux tetrahedron
-    full_text = "Meissner and Schilling[2] showed how to modify the Reuleaux tetrahedron to form a surface of constant width, by replacing three of its edge arcs by curved patches formed as the surfaces of rotation of a circular arc. According to which three edge arcs are replaced (three that have a common vertex or three that form a triangle) there result two noncongruent shapes that are sometimes called Meissner bodies or Meissner tetrahedra (for interactive pictures and films see Weber).[3] Bonnesen and Fenchel[4] conjectured that Meissner tetrahedra are the minimum-volume three-dimensional shapes of constant width, a conjecture which is still open.[5] In connection with this problem, Campi, Colesanti and Gronchi[6] showed that the minimum volume surface of revolution with constant width is the surface of revolution of a Reuleaux triangle through one of its symmetry axes."
-    #open file and write text to file, then close
+    full_text = "Meissner and Schilling[2] showed how to modify the Reuleaux tetrahedron to form a surface of constant width"    #open file and write text to file, then close
     f_loc = 'C:\\Users\\Dmitri\\distributed_dropbox\\complex_test.txt'
     f = open(f_loc,'w');
     f.write(full_text)
@@ -140,7 +139,6 @@ def complex_test():
     return
     
 complex_test()
-
 
 ###functions borrowed from http://www.laurentluce.com/posts/python-and-cryptography-with-pycrypto/
 
@@ -200,8 +198,16 @@ def client_upload(file_name,address):
     private_key = import_private_key()
     rng = Random.new().read
     signature = private_key.sign(str(rev_no),rng)
-    #send tuple of file and signature
+    #send tuple of filename, file message, revision number, and signature
     return
+
+def encrypt_message(uuid,file_enc,file_enc_message,rev_no,signature):
+    public_key = import_public_key(uuid)
+    f_enc_enc = public_key.encrypt(file_enc,32)
+    file_enc_message_enc = public_key.encrypt(file_enc_message,32)
+    rev_no_enc = public_key.encrypt(str(rev_no),32)
+    signature_enc = public_key.encrypt(str(signature[0]))
+    return (f_enc_enc,file_enc_message_enc,rev_no_enc,signature_enc)
     
 def client_download(file_name,address):
     enc_file = encrypt_filename(file_name)
@@ -214,13 +220,22 @@ def client_download(file_name,address):
 
 ###some serverside functions
 def server_download(client_uuid,message):
-    (filename,f,signmessage,ver_no) = message
+    (filename,f,ver_no,signmessage) = message
     public_key = import_public_key(client_uuid)
     if(public_key.verify(signmessage,str(ver_no))):
         if(ver_no > cur_ver_no):
             f_wr = open(filename,'w')
             f_wr.write(f)
             f_wr.close()
+
+def server_send(client_uuid,file_enc):
+    file_enc_message = open(file_enc,'r').read()
+    private_key = import_private_key()
+    rng = Random.new().read
+    rev_no = get_rev_number()
+    signature = private_key.sign(str(rev_no),rng)
+    message = encrypt_message(client_uuid,file_enc,file_enc_message,rev_no,signature)
+
 
 def __main__():
     if(os.path.isdir(directory) != True):
