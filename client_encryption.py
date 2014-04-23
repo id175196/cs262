@@ -3,37 +3,37 @@
 from Crypto.PublicKey import RSA
 from Crypto import Random
 from Crypto.Cipher import DES3
-import os, random, string, pickle, mt, pickling
+import os, random, string, pickle, mt, mt_pickling
 
 class ClientEncryption:  
   #path name for key files/merkle trees, etc.
   backup_path = 'bookkeeping'
-  peronal_path = 'personal'
+  personal_path = 'personal'
   files_path = 'files'
   # take a UUID and return the location for the private key file
   def private_foreign_key_loc(self, uuid):
-      return os.path.join(self.directory, uuid, backup_path, "private_key.ppk")
+      return os.path.join(self.directory, uuid, self.backup_path, "private_key.ppk")
   # take a UUID and return the location for the public key file
   def public_foreign_key_loc(self, uuid):
-      return os.path.join(self.directory, uuid, backup_path, "public_key.PEM")
+      return os.path.join(self.directory, uuid, self.backup_path, "public_key.PEM")
   # take a UUID and return the location for the personal encrypter file
   def personal_foreign_encrypter_loc(self, uuid):
-      return os.path.join(self.directory, uuid, backup_path, "personal_encrypter.txt")
+      return os.path.join(self.directory, uuid, self.backup_path, "personal_encrypter.txt")
   # take a UUID and return the location for the revision number file
   def foreign_rev_no_loc(self, uuid):
-      return os.path.join(self.directory, uuid, backup_path, "rev_no.txt")
+      return os.path.join(self.directory, uuid, self.backup_path, "rev_no.txt")
   # take a UUID and return the location of their files.
   def foreign_files_loc(self,uuid):
-      return os.path.join(self.directory, uuid, files_path)
+      return os.path.join(self.directory, uuid, self.files_path)
 
   # create merkle tree for a given uuid
   def make_foreign_mt(self,uuid):
       mtree = mt.MarkleTree(self.files_loc)
-      pickling.pickle_data(mtree,self.mt_loc)
+      mt_pickling.pickle_data(mtree,self.mt_loc)
       return
   # get personal merkle tree
   def get_personal_mt(self):
-      pickling.unpickle_data(self.mt_loc)
+      mt_pickling.unpickle_data(self.mt_loc)
   # take a UUID and return the merkle tree for all of their files
   def get_foreign_mt(self,uuid):
       return mt.MarkleTree(self.foreign_files_loc(uuid))
@@ -45,22 +45,22 @@ class ClientEncryption:
     
       # Set up file locations
       self.directory = directory
-      self.private_key_loc = os.path.join(self.directory, peronal_path, backup_path, "private_key.ppk")
-      self.public_key_loc = os.path.join(self.directory, peronal_path, backup_path, "public_key.PEM")
-      self.personal_encrypter_loc = os.path.join(self.directory, peronal_path, backup_path, "personal_encrypter.txt")
-      self.rev_no_loc = os.path.join(self.directory, peronal_path, backup_path, "rev_no.txt")
-      self.mt_loc = os.path.join(self.directory, peronal_path, backup_path, "mtree.mt")
-      self.files_loc = os.path.join(self.directory, peronal_path, files_path)
+      self.private_key_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "private_key.ppk")
+      self.public_key_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "public_key.PEM")
+      self.personal_encrypter_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "personal_encrypter.txt")
+      self.rev_no_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "rev_no.txt")
+      self.mt_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "mtree.mt")
+      self.files_loc = os.path.join(self.directory, self.personal_path, self.files_path)
       random_generator = Random.new().read
       
       if(os.path.isdir(self.directory) != True):
           os.makedirs(self.directory)
-      if(os.path.isdir(os.path.join(self.directory, personal_path)) != True):
-          os.makedirs(os.path.join(self.directory, personal_path))
+      if(os.path.isdir(os.path.join(self.directory, self.peronal_path)) != True):
+          os.makedirs(os.path.join(self.directory, self.peronal_path))
       if(os.path.isdir(self.files_loc) != True):
           os.makedirs(self.files_loc)
-      if(os.path.isdir(os.path.join(self.directory, personal_path, backup_path)) != True):
-          os.makedirs(os.path.join(self.directory, personal_path, backup_path))
+      if(os.path.isdir(os.path.join(self.directory, self.peronal_path, self.backup_path)) != True):
+          os.makedirs(os.path.join(self.directory, self.peronal_path, self.backup_path))
           
       # Generate the RSA key pair if it doesn't exist
       if not (os.path.isfile(self.private_key_loc) and os.path.isfile(self.public_key_loc)):
@@ -125,11 +125,11 @@ class ClientEncryption:
   
   # get the revision number dictionary
   def get_rev_dict(self):
-    return pickling.unpickle_data(self.rev_no_loc)
+    return mt_pickling.unpickle_data(self.rev_no_loc)
 
   # store the revision number dictionary
   def store_rev_dict(self,rev_dict):
-    return pickling.pickle_data(rev_dict, self.rev_no_loc)
+    return mt_pickling.pickle_data(rev_dict, self.rev_no_loc)
   
   ######many of the following functions are for testing purposes only#######
   
