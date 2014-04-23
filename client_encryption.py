@@ -3,23 +3,41 @@
 from Crypto.PublicKey import RSA
 from Crypto import Random
 from Crypto.Cipher import DES3
-import os, random, string
+import os, random, string, pickle, mt, pickling
 
 class ClientEncryption:  
-  
+  #path name for key files/merkle trees, etc.
+  backup_path = 'bookkeeping'
+  peronal_path = 'personal'
+  files_path = 'files'
   # take a UUID and return the location for the private key file
   def private_foreign_key_loc(self, uuid):
-      return os.path.join(self.directory, uuid + '_' + "private_key.ppk")
+      return os.path.join(self.directory, uuid, backup_path, "private_key.ppk")
   # take a UUID and return the location for the public key file
   def public_foreign_key_loc(self, uuid):
-      return os.path.join(self.directory, uuid + '_' + "public_key.PEM")
+      return os.path.join(self.directory, uuid, backup_path, "public_key.PEM")
   # take a UUID and return the location for the personal encrypter file
   def personal_foreign_encrypter_loc(self, uuid):
-      return os.path.join(self.directory, uuid + '_' + "personal_encrypter.txt")
-  
+      return os.path.join(self.directory, uuid, backup_path, "personal_encrypter.txt")
   # take a UUID and return the location for the revision number file
   def foreign_rev_no_loc(self, uuid):
-      return os.path.join(self.directory, uuid + '_' + "rev_no.txt")
+      return os.path.join(self.directory, uuid, backup_path, "rev_no.txt")
+  # take a UUID and return the location of their files.
+  def foreign_files_loc(self,uuid):
+      return os.path.join(self.directory, uuid, files_path)
+
+  # create merkle tree for a given uuid
+  def make_foreign_mt(self,uuid):
+      mtree = mt.MarkleTree(self.files_loc)
+      pickling.pickle_data(mtree,self.mt_loc)
+      return
+  # get personal merkle tree
+  def get_personal_mt(self):
+      pickling.unpickle_data(self.mt_loc)
+  # take a UUID and return the merkle tree for all of their files
+  def get_foreign_mt(self,uuid):
+      return mt.MarkleTree(self.foreign_files_loc(uuid))
+
   
   
   # initialized pubic and private key of personal computer
@@ -27,15 +45,22 @@ class ClientEncryption:
     
       # Set up file locations
       self.directory = directory
-      self.private_key_loc = os.path.join(self.directory, "private_key.ppk")
-      self.public_key_loc = os.path.join(self.directory, "public_key.PEM")
-      self.personal_encrypter_loc = os.path.join(self.directory, "personal_encrypter.txt")
-      self.rev_no_loc = os.path.join(self.directory, "rev_no.txt")
-      
+      self.private_key_loc = os.path.join(self.directory, peronal_path, backup_path, "private_key.ppk")
+      self.public_key_loc = os.path.join(self.directory, peronal_path, backup_path, "public_key.PEM")
+      self.personal_encrypter_loc = os.path.join(self.directory, peronal_path, backup_path, "personal_encrypter.txt")
+      self.rev_no_loc = os.path.join(self.directory, peronal_path, backup_path, "rev_no.txt")
+      self.mt_loc = os.path.join(self.directory, peronal_path, backup_path, "mtree.mt")
+      self.files_loc = os.path.join(self.directory, peronal_path, files_path)
       random_generator = Random.new().read
       
       if(os.path.isdir(self.directory) != True):
           os.makedirs(self.directory)
+      if(os.path.isdir(os.path.join(self.directory, personal_path)) != True):
+          os.makedirs(os.path.join(self.directory, personal_path))
+      if(os.path.isdir(self.files_loc) != True):
+          os.makedirs(self.files_loc)
+      if(os.path.isdir(os.path.join(self.directory, personal_path, backup_path)) != True):
+          os.makedirs(os.path.join(self.directory, personal_path, backup_path))
           
       # Generate the RSA key pair if it doesn't exist
       if not (os.path.isfile(self.private_key_loc) and os.path.isfile(self.public_key_loc)):
@@ -54,6 +79,8 @@ class ClientEncryption:
 
       f_personal.close()
       f_rev.close();
+
+      
       return
   
   # initialize public and private keys of a foreign computer given the uuid.
@@ -66,12 +93,12 @@ class ClientEncryption:
       f_private = open(self.private_foreign_key_loc(uuid), 'w')
       f_public = open(self.public_foreign_key_loc(uuid), 'w')
       f_personal = open(self.personal_foreign_encrypter_loc(uuid), 'w')
-      f_rev = open(self.foreign_rev_no_loc(uuid), 'w')
+      f_rev = open(self.foreign_rev_no_loc(uuid), 'wb')
       f_private.write(key.exportKey())
       f_public.write(key.publickey().exportKey())
       f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
       f_personal.write(Random.get_random_bytes(8))
-      f_rev.write('1')
+      pickle.dump(dict(),f_rev)
       f_private.close()
       f_public.close()
       f_personal.close()
@@ -96,15 +123,13 @@ class ClientEncryption:
           return RSA.importKey(open(self.public_key_loc, 'r').read())
       return RSA.importKey(open(self.public_foreign_key_loc(uuid), 'r').read())
   
-  # get the revision number and increment the value, return the unincremented value
-  def get_rev_number(self):
-      f_rev = open(self.rev_no_loc, 'r')
-      rev_no = int(f_rev.read())
-      f_rev.close()
-      f_rev = open(self.rev_no_loc, 'w')
-      f_rev.write(str(rev_no + 1))
-      f_rev.close()
-      return rev_no
+  # get the revision number dictionary
+  def get_rev_dict(self):
+    return pickling.unpickle_data(self.rev_no_loc)
+
+  # store the revision number dictionary
+  def store_rev_dict(self,rev_dict):
+    return pickling.pickle_data(rev_dict, self.rev_no_loc)
   
   ######many of the following functions are for testing purposes only#######
   
@@ -118,7 +143,16 @@ class ClientEncryption:
   # import private key of user UUID. used for testing
   def import_foreign_private_key(self, uuid):
       return RSA.importKey(open(self.private_foreign_key_loc(uuid), 'r').read())
-  
+
+  # update the rev_dict and return the new dict
+  def update_rev_dict(self,rev_dict,key):
+    if key in rev_dict:
+      rev_dict[key] = rev_dict[key] + 1;
+    else:
+      rev_dict[key] = 1
+    return rev_dict
+
+      
   
   # A quick test
   def test(self):
@@ -130,6 +164,9 @@ class ClientEncryption:
   
   # a more complex test where a file is encrypted using the personal encrypter, encrypted using a UUID public key
   # and then decrypted using the private key of UUID, and compared with the original encrypted message
+  ##### WARNING: THIS TEST ADDS AN ENTRY INTO THE REVISION NUMBER DICT, DO NOT USE
+  ##### THIS TEST WHEN IN PRODUCTION (UNLESS YOU WANT A FILE CREATED AND EDITED INTO
+  ##### YOUR STUFF
   def complex_test(self):
       uuid = '100'
       self.init_remote(uuid)
@@ -142,7 +179,8 @@ class ClientEncryption:
       # encrypt the file using local encryption key
       f_enc = self.client_encrypt(f_loc)
       f_enc_message = open(f_enc, 'r').read()
-      rev_no = self.get_rev_number()
+      rev_dict = self.get_rev_dict()
+      rev_no = 1
       rng = Random.new().read
       private_key = self.import_private_key()
       signature = private_key.sign(str(rev_no), rng)
