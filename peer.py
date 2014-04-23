@@ -14,7 +14,7 @@ class Peer:
   #  then scrape just the key data from those files for use with PyCrypto.
   #  See https://stackoverflow.com/questions/12911373/how-do-i-use-a-x509-certificate-with-pycrypto 
   private_key_file = 0
-  public_key_file = 0
+  x509_file = 0
   encryption = 0
   
   def __init__(self, directory=os.getcwd()):
@@ -22,7 +22,7 @@ class Peer:
     self.encryption = client_encryption.ClientEncryption(directory)
     
     self.private_key_file = self.encryption.private_key_loc
-    self.public_key_file = self.encryption.public_key_loc
+    self.x509_file = self.encryption.x509_loc
     
     self.peer_file = os.path.join(directory,'peer_file.pickle')
     if os.path.isfile(self.peer_file):
@@ -67,7 +67,7 @@ class Peer:
     s_listener.listen(1)
     s_base, ip = s_listener.accept()
     print 'Peer Server: A peer is attempting to connect'
-    s_secured = ssl.wrap_socket(s_base, server_side=True, keyfile=self.private_key_file, certfile=self.public_key_file, ssl_version=ssl.PROTOCOL_SSLv3)
+    s_secured = ssl.wrap_socket(s_base, server_side=True, keyfile=self.private_key_file, certfile=self.x509_file, ssl_version=ssl.PROTOCOL_SSLv3)
     print 'Peer Server: Data received from peer; displaying decrypted:'+s_secured.recv(4096)
     print 'Peer Server: Data received from peer; displaying encrypted:'+s_base.recv(4096)
     s_secured.close()
@@ -75,7 +75,7 @@ class Peer:
     s_listener.close()
     
     
-if __name__ == '__main__':
+def main():
   print 'Executing peer connection test.'
   import threading
   client = Peer()
@@ -87,5 +87,9 @@ if __name__ == '__main__':
   t2.start()
   t2.join()
   t1.join()
-  
-  
+
+
+if __name__ == '__main__':
+  main()
+
+ 
