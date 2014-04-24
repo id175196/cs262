@@ -7,6 +7,7 @@ import hashlib
 import random
 import shutil
 import struct
+import inspect
 
 class Peer:
   
@@ -25,7 +26,8 @@ class Peer:
   peer_id = None
   store_id = None
   stores = None
-  debug = None
+  debug_verbosity = None
+  debug_prefix = None
   
   
   #################
@@ -42,7 +44,7 @@ class Peer:
   #  the RSA public key, but we use use their SHA-256 hash to "flatten" them to
   #  a shorter, predictable length.
   def generate_storeId(self):
-    self.peer_id = hashlib.sha256(self.encryption.import_public_key().exportKey()).digest()
+    self.store_id = hashlib.sha256(self.encryption.import_public_key().exportKey()).digest()
   
   # Use a file to permanently store certain data.
   # NOTE: MAKE SURE ALL CALLS TO THIS UNSAFE FUNCTION PROPERLY EXPECT THE SAME
@@ -51,33 +53,40 @@ class Peer:
     try:
       # Load the data file
       if os.path.isfile(self.peer_data_file):
+        self.debug_print(2,'Peer metadata file found, loading.')
         with open(self.peer_data_file, 'r') as f:
           data = cPickle.load(f)
       else:
         raise Exception()
     except:
       try:
+        self.debug_print(2,'Peer metadata file not found. Attempting to load backup.')
         # Load the backup file
         if os.path.isfile(self.backup_data_file):
+          self.debug_print(2,'Peer backup metadata file found, loading.')
           with open(self.backup_data_file, 'r') as f:
             data = cPickle.load(f)
             shutil.copyfile(self.backup_data_file, self.peer_data_file)
         else:
           raise Exception()
       except:
+        self.debug_print(2,'Peer backup metadata file not found. Generating new file.')
         # Generate a new empty file and store the initial metadata
-        open(self.peer_data_file, 'w').close()
         self.generate_peerId()
         self.peers = dict()
         self.generate_storeId()
         self.stores = dict()
-        data = (self.peers, self.peer_id, self.store_id, self.stores)
+        data = (self.peer_id, self.peers, self.store_id, self.stores)
+        with open(self.peer_data_file, 'w') as f:
+          cPickle.dump(data, f)
         self.update_peer_data(data)
+      
     return data
   
   
-  def __init__(self, directory=os.getcwd(), debug=False):
-    self.debug = debug
+  def __init__(self, directory=os.getcwd(), debug_verbosity=0, debug_prefix=None):
+    self.debug_verbosity = debug_verbosity
+    self.debug_prefix = debug_prefix
     
     # Get the encryption object
     self.encryption = client_encryption.ClientEncryption(directory)
@@ -87,7 +96,7 @@ class Peer:
     self.peer_data_file = os.path.join(self.encryption.personal_path_full,'peer_data_file.pickle')
     self.backup_data_file = self.peer_data_file + '.bak'
     
-    (self.peers, self.peer_id, self.store_id, self.stores) = self.load_peer_data()
+    (self.peer_id, self.peers, self.store_id, self.stores) = self.load_peer_data()
 
   ###########################
   # Stored metadata methods #
@@ -98,7 +107,18 @@ class Peer:
     shutil.copyfile(self.peer_data_file, self.backup_data_file)
     with open(self.peer_data_file, 'w') as f:
       cPickle.dump(data, f)
-    (self.peers, self.peer_id, self.store_id, self.stores) = data
+    # Refer to the new data now that it's been stored to disk
+    (self.peer_id, self.peers, self.store_id, self.stores) = data
+    
+    self.debug_print(1, 'Updated metadata.')
+    if self.debug_verbosity > 2:
+      (peer_id, peers, store_id, stores) = data
+      print 'peer_id =', peer_id
+      print 'peers =', peers
+      print 'store_id =', store_id
+      print 'stores =', stores
+      
+
     
   def record_peer_ip(self, peer_id, peer_ip):
     # Do nothing if the mapping is already known
@@ -106,7 +126,7 @@ class Peer:
       return
     peers_new = self.peers.copy()
     peers_new[peer_id] = peer_ip
-    data = (peers_new, self.peer_id, self.store_id, self.stores)
+    data = (self.peer_id, peers_new, self.store_id, self.stores)
     self.update_peer_data(data)
     
   def record_store_association(self, peer_id, store_id):
@@ -114,6 +134,7 @@ class Peer:
     if (store_id in self.stores) and (peer_id in self.stores[store_id]):
       return
     
+    self.debug_print(2, 'Associating new store: peer_id='+peer_id+', store_id='+store_id)
     stores_new = self.stores.copy()
     
     # The store was previously unknown
@@ -121,14 +142,19 @@ class Peer:
       stores_new[store_id]  = list()
     
     stores_new[store_id]  = stores_new[store_id].append(peer_id)
-    data = (self.peers, self.peer_id, self.store_id, stores_new)
+    data = (self.peer_id, self.peers, self.store_id, stores_new)
     self.update_peer_data(data)
+    
+  #################################
+  # Encryption class interactions #
+  #################################
   
   # Associate a store to a peer
   def associate_store(self, peer_id, store_id):
     if store_id not in self.stores:
       # Initialize the folder structure to back up this store
       # FIXME: DO ACTUAL WORK HERE
+      self.debug_print(1, 'Creating storage for new store.')
       None
     # Ensure this store association is recorded
     self.record_store_association(peer_id, store_id)
@@ -137,23 +163,30 @@ class Peer:
     # FIXME: DO THE WORK
     None
 
+  def get_rev_number(self, store_id):
+    #FIXME
+    None
+    
+  def verify_rev_number(self, store_id):
+    # FIXME: Implement. Also, how do we know who the store's owner is? Will need to set that during store creation.
+    None
   ########################
   # Steady-state methods #
   ########################
   
 
 
-  def connect_to_peer(self, uuid):
+  def connect_to_peer(self, peer_id):
     # TODO: Raises `KeyError` exception on invalid UUID.
-    ip = self.peers[uuid]
-    s = ssl.wrap_socket( socket.socket(socket.AF_INET, socket.SOCK_STREAM), ssl_version=ssl.PROTOCOL_SSLv3)
-    s.connect((ip, self.listening_port))
-    return s
+    peer_ip = self.peers[peer_id]
+    skt = ssl.wrap_socket( socket.socket(socket.AF_INET, socket.SOCK_STREAM), ssl_version=ssl.PROTOCOL_SSLv3)
+    skt.connect((peer_ip, self.listening_port))
+    return skt
   
   def create_listening_socket(self):
-    s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    s.bind(('', self.listening_port))
-    return s
+    skt = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    skt.bind(('', self.listening_port))
+    return skt
   
   
   
@@ -165,28 +198,33 @@ class Peer:
     message_id, pickled_payload = self.receive(skt_ssl)
     # Associate, if requested
     if message_id == message_ids['assoc_req']:
+      self.debug_print(1, 'Received association request from peer server')
       # Acknowledge the request, supplying own public key
       self.send_assoc_ack(skt_ssl)
       # Do local association
       (peer_id, store_id) = unpicklers['assoc_req'](pickled_payload)
       self.associate_store(peer_id, store_id)
-      
-    # Unexpected message
-    elif message_id != message_ids['identity_ack']:
+    elif message_id == message_ids['identity_ack']:
+      self.debug_print(1, 'Received identity acknowledgement from peer server')
+    else:
+      self.debug_print(1, 'Received unexpected response to identification.')
       raise Exception()
   
   
     
 
   def peer_server_session(self, skt_ssl, peer_ip):
-    # Get the peer client's peer ID.
+    # Get the peer client's identification.
     (message_id, pickled_payload) = self.receive(skt_ssl)
     if message_id != message_ids['identity']:
-      # All sessions must begin with the peer client sending identification
+      self.debug_print(1, 'Incorrect message type (',+str(message_id)+') received.'+
+                       ' All sessions must begin with the peer client sending identification.')
       raise Exception()
     (peer_id, store_id) = unpicklers['identity'](pickled_payload)
+    self.debug_print(1, 'Received identification from peer client.')
+    self.debug_print(2, 'peer_id = '+peer_id+', store_id = '+store_id)
         
-    # Acknowledge if the peer is known
+    # Send acknowledgement if the peer is known
     if peer_id in self.peers.keys():
       self.send_identity_ack(skt_ssl)
     # If the peer is unknown, request association
@@ -195,14 +233,18 @@ class Peer:
       # Get the response
       (message_id, pickled_payload) = self.receive(skt_ssl)
       if message_id != message_ids['assoc_ack']:
+        self.debug_print(1, 'Received unexpected response to association request.')
         raise Exception()
+      self.debug_print(1, 'Received acknowledgement to association request. Recording peer client\'s public key')
       peer_pubkey = unpicklers['assoc_ack'](pickled_payload)
-      self.record_peer_key(peer_pubkey)
+      self.record_peer_key(peer_pubkey)      
       # Do association
       self.associate_store(peer_id, store_id)
           
     # Ensure the IP address we have recorded for this peer is up to date
     self.record_peer_ip(peer_id, peer_ip)
+    
+    
     
       
     
@@ -210,10 +252,10 @@ class Peer:
   def run(self):
     skt_listener = self.create_listening_socket()
     skt_listener.listen(1) # FIXME: Will need to deal with multiple peer clients eventually
-    skt_raw, ip = skt_listener.accept()
+    skt_raw, (peer_ip, _) = skt_listener.accept()
     skt_ssl = ssl.wrap_socket(skt_raw, server_side=True, keyfile=self.private_key_file, certfile=self.x509_cert_file, ssl_version=ssl.PROTOCOL_SSLv3)
     try:
-      self.peer_server_session(skt_ssl, ip)
+      self.peer_server_session(skt_ssl, peer_ip)
     except:
       skt_ssl.shutdown(socket.SHUT_RDWR)
       skt_ssl.close()
@@ -278,6 +320,18 @@ class Peer:
   # Debug and development methods #
   #################################
   
+  def debug_print(self, verbosity, text):
+    if self.debug_verbosity > 4:
+      print '\nCall stack:'
+      for frame in inspect.stack():
+        f_name = frame[3]
+        print f_name
+      print '\nDebug message:'
+      
+    if self.debug_verbosity >= verbosity:
+      print self.debug_prefix
+      print text
+    
  
   #########
   # Tests #
@@ -307,7 +361,12 @@ class Peer:
 
   def test_client_handshake(self, peer_ip):
     # FIXME: This modifies the metadata file, might not want such mangling
+    no_peers = dict()
+    no_stores = dict()
+    data = (self.peer_id, no_peers, self.store_id, no_stores)
+    self.update_peer_data(data)
     self.record_peer_ip(-1, peer_ip)
+    
     skt_ssl = self.connect_to_peer(-1)
     try:
       self.peer_client_session(skt_ssl)
@@ -315,18 +374,25 @@ class Peer:
       skt_ssl.shutdown(socket.SHUT_RDWR)
       skt_ssl.close()
       raise
+    
+    skt_ssl.shutdown(socket.SHUT_RDWR)
+    skt_ssl.close()
+
    
   def test_server_handshake(self):
     skt_listener = self.create_listening_socket()
     skt_listener.listen(1) # FIXME: Will need to deal with multiple peer clients eventually
-    skt_raw, ip = skt_listener.accept()
+    skt_raw, (peer_ip, _) = skt_listener.accept()
     skt_ssl = ssl.wrap_socket(skt_raw, server_side=True, keyfile=self.private_key_file, certfile=self.x509_cert_file, ssl_version=ssl.PROTOCOL_SSLv3)
     try:
-      self.peer_server_session(skt_ssl, ip)
+      self.peer_server_session(skt_ssl, peer_ip)
     except:
       skt_ssl.shutdown(socket.SHUT_RDWR)
       skt_ssl.close()
       raise
+    
+    skt_ssl.shutdown(socket.SHUT_RDWR)
+    skt_ssl.close()
     
 
 
@@ -366,8 +432,8 @@ unpicklers = {'identity': unpickle_identity,
 def main():
   print 'Executing peer connection test.'
   import threading
-  client = Peer(debug=True)
-  server = Peer(debug=True)
+  client = Peer(debug_verbosity=2, debug_prefix='Peer Client:')
+  server = Peer(debug_verbosity=2, debug_prefix='Peer Server:')
   
 #   t1 = threading.Thread(target=server.test_server_ssl, args=())
 #   t2 = threading.Thread(target=client.test_client_ssl, args=('localhost',))
