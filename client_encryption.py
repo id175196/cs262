@@ -49,10 +49,10 @@ class ClientEncryption:
 
   # Use OpenSSL's CLI to generate an X.509 from the existing RSA private key
   # Adapted from http://stackoverflow.com/a/12921889 and http://stackoverflow.com/a/12921889
-  def generate_x509(self):
+  def generate_x509_cert(self):
     subprocess.check_call('openssl req -new -batch -x509 -nodes -days 3650 -key ' +
                           self.private_key_loc +
-                          ' -out ' + self.x509_loc,
+                          ' -out ' + self.x509_cert_loc,
                           shell=True)    
     
   # initialized pubic and private key of personal computer
@@ -60,9 +60,10 @@ class ClientEncryption:
     
       # Set up file locations
       self.directory = directory
+      self.personal_path_full = os.path.join(self.directory, self.personal_path)
       self.private_key_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "private_key.ppk")
       self.public_key_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "public_key.PEM")
-      self.x509_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "x509.PEM")
+      self.x509_cert_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "x509.PEM")
       self.personal_encrypter_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "personal_encrypter.txt")
       self.rev_no_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "rev_no.txt")
       self.mt_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "mtree.mt")
@@ -77,10 +78,10 @@ class ClientEncryption:
       if(os.path.isdir(os.path.join(self.directory, self.personal_path, self.backup_path)) != True):
           os.makedirs(os.path.join(self.directory, self.personal_path, self.backup_path))
           
-      # Generate the RSA key pair if it doesn't exist
+      # Generate the RSA key pair and certificate if they don't exist
       if not (os.path.isfile(self.private_key_loc) and os.path.isfile(self.public_key_loc)):
         self.generate_public_keypair()
-        self.generate_x509()
+        self.generate_x509_cert()
       
       f_personal = open(self.personal_encrypter_loc, 'w')
       f_rev = open(self.rev_no_loc, 'w')
