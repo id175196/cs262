@@ -19,9 +19,6 @@ class Peer:
   listening_port = 51337 # TODO: Magic number. Ideally would want listening listening_port number to be configurable per peer.
   peers = None  # A mapping from UUID to IP address (peer user ID as well?).
   peer_data_file = None # Non-volatile storage for peer data.
-  # FIXME: Need to use OpenSSL from the command line to generate X.509 key pairs that can be used by the `ssl` package,
-  #  then scrape just the key data from those files for use with PyCrypto.
-  #  See https://stackoverflow.com/questions/12911373/how-do-i-use-a-x509-certificate-with-pycrypto 
   private_key_file = None
   x509_cert_file = None
   encryption = None
@@ -350,7 +347,15 @@ def unpickle_assoc_ack(pickled_payload):
 message_ids = {'identity': 0,
                'identity_ack': 1,
                'assoc_req': 2,
-               'assoc_ack': 3}
+               'assoc_ack': 3,
+               'rev_req': 4, # FIXME: Implement
+               'rev_resp': 5, # FIXME
+               'store_hash_req': 6, # FIXME
+               'store_hash_resp': 7, # FIXME
+               'download_req': 8, # FIXME
+               'download_resp': 9, # FIXME
+               'disconnect_req': 10 # FIXME
+               }
 unpicklers = {'identity': unpickle_identity,
               #'identity_ack': Has no data to unpickle
               'assoc_req': unpickle_assoc_req,
