@@ -59,7 +59,7 @@ class ClientEncryption:
     return
 
   # take a uuid and return the tuple message (revision number, tophash, and signature)
-  def get_foreign_rev_no(self,uuid,tup):
+  def get_foreign_rev_no(self,uuid):
       return pickling.unpickle_data(self.foreign_rev_no_loc())
 
   # take a uuid and tuple message (revision number, tophash, and signature) and store
@@ -409,6 +409,17 @@ class ClientEncryption:
       rev_no = self.get_rev_number()
       signature = private_key.sign(str(rev_no), rng)
       message = self.encrypt_message(client_uuid, file_enc, file_enc_message, rev_no, signature)
+
+
+
+  # check to see whether uuid's signature is newer or not
+  def is_peer_rev_no_newer(client_uuid, peer_uuid, tup):
+      (rev_no, tophash, sig) = tup
+      public_key = self.import_public_key(client_uuid)
+      #make sure that the signaturue is valid
+      if (str((rev_no,tophash)) == public_key.decrypt(sig)):
+          (rev_no_personal,tophash_personal,sig_personal) = self.get_foreign_rev_no(slient_uuid)
+          return rev_no < rev_no_personal
 
 
 def __main__():
