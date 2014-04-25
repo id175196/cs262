@@ -143,8 +143,32 @@ def MTDiff(mt_a, a_tophash, mt_b, b_tophash):
 
     return
 
+#function that returns list of files mt_a is missing
+def mtMissLocs(mt_a, a_tophash, mt_b, b_tophash):
+    missings = list()
+    if a_tophash != b_tophash:
+        a_value = mt_a._mt[a_tophash] 
+        a_child = a_value[1]    # retrive the child list for merkle tree a
+        b_value = mt_b._mt[b_tophash] 
+        b_child = b_value[1]    # retrive the child list for merkle tree b
+        for itemhash, item in b_child.iteritems():
+            if not (itemhash in a_child):
+                print "Info: Missing : %s" % item
+                missings.append(item)
+            try:
+                if a_child[itemhash] == item:
+                    skip = 1
+            except:
+                temp_value = mt_b._mt[itemhash]
+                if len(temp_value[1]) > 0:      # check if this is a directory
+                    diffhash = list(set(b_child.keys()) - set(a_child.keys()))
+                    missings += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
+
+    return missings
+
 #This is my slightly different version of MTDiff where it returns a list of
 #file locations that are different
+#assumes the first tree is the newer and the second tree is the older
 def mtDiffLocs(mt_a, a_tophash, mt_b, b_tophash):
     diffs = list()
     if a_tophash != b_tophash:
@@ -152,8 +176,9 @@ def mtDiffLocs(mt_a, a_tophash, mt_b, b_tophash):
         a_child = a_value[1]    # retrive the child list for merkle tree a
         b_value = mt_b._mt[b_tophash] 
         b_child = b_value[1]    # retrive the child list for merkle tree b
-
         for itemhash, item in a_child.iteritems():
+            if not (itemhash in b_child):
+                diffs.append(item)
             try:
                 if b_child[itemhash] == item:
                     print "Info: SAME : %s" % item
@@ -166,11 +191,47 @@ def mtDiffLocs(mt_a, a_tophash, mt_b, b_tophash):
                 else:
                     diffs.append(item)
     return diffs
+
+#function that takes two merkle trees and returns the updated files in the first
+# (including added files) and a second list with files that the second tree
+# has that the first does not.
+
+def mtLocs(mt_a,mt_b):
+    a_tophash = mt_a._tophash
+    b_tophash = mt_b._tophash
+    return(mtDiffLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash), mtMissLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash))
+           
+
                 
-if __name__ == "__main__":
-    mt_a = MarkleTree('testA')
-    print mt_a._mt
-    mt_b = MarkleTree('testB')
-    MTDiff(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
-    vals = mtDiffLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
+#if __name__ == "__main__":
+mt_a = MarkleTree('testA')
+print mt_a._mt
+mt_b = MarkleTree('testB')
+#MTDiff(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
+vals = mtDiffLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
+#mtMissLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
+
+
+a_tophash = mt_a._tophash
+b_tophash = mt_b._tophash
+missings = list()
+if a_tophash != b_tophash:
+    a_value = mt_a._mt[a_tophash] 
+    a_child = a_value[1]    # retrive the child list for merkle tree a
+    b_value = mt_b._mt[b_tophash] 
+    b_child = b_value[1]    # retrive the child list for merkle tree b
+    for itemhash, item in b_child.iteritems():
+        if not(item in a_child.values()):
+            print "Info: Missing : %s" % item
+            missings.append(item)
+        try:
+            if a_child[itemhash] == item:
+                skip = 1
+        except:
+            temp_value = mt_b._mt[itemhash]
+            if len(temp_value[1]) > 0:      # check if this is a directory
+                diffhash = list(set(b_child.keys()) - set(a_child.keys()))
+                missings += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
+
+
 

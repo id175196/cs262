@@ -26,8 +26,8 @@ class ClientEncryption:
   def foreign_files_loc(self,uuid):
       return os.path.join(self.directory, uuid, self.files_path)
 
-  # create merkle tree for a given uuid
-  def make_foreign_mt(self,uuid):
+  # create merkle tree and store
+  def make_personal_mt(self):
       mtree = mt.MarkleTree(self.files_loc)
       mt_pickling.pickle_data(mtree,self.mt_loc)
       return
@@ -135,14 +135,35 @@ class ClientEncryption:
       if uuid == '':
           return RSA.importKey(open(self.public_key_loc, 'r').read())
       return RSA.importKey(open(self.public_foreign_key_loc(uuid), 'r').read())
+
+  # get the revision number
+  def get_rev_number(self):
+    return int(open(self.rev_no_loc,'r').read())
+  # update the revision number
+  def inc_rev_number(self):
+    rev_no = self.get_rev_no() + 1
+    f = open(self.rev_no_loc,'w')
+    f.write(str(rev_no))
+    f.close()
+    return
+
+  # get revision number given a uuid
+  def get_foreign_rev_no(self,uuid):
+    return 1
   
   # get the revision number dictionary
-  def get_rev_dict(self):
-    return mt_pickling.unpickle_data(self.rev_no_loc)
-
+  ########################################################################
+  ####### OBSOLETE FOR NOW (ASSUME ALL FILES ARE SYNCED WHEN SYNC OCCURS)
+  ########################################################################
+##  def get_rev_dict(self):
+##    return pickling.unpickle_data(self.rev_no_loc)
+  
+  ########################################################################
+  ####### OBSOLETE FOR NOW (ASSUME ALL FILES ARE SYNCED WHEN SYNC OCCURS)
+  ########################################################################
   # store the revision number dictionary
-  def store_rev_dict(self,rev_dict):
-    return mt_pickling.pickle_data(rev_dict, self.rev_no_loc)
+##  def store_rev_dict(self,rev_dict):
+##    return pickling.pickle_data(rev_dict, self.rev_no_loc)
   
   ######many of the following functions are for testing purposes only#######
   
@@ -158,12 +179,15 @@ class ClientEncryption:
       return RSA.importKey(open(self.private_foreign_key_loc(uuid), 'r').read())
 
   # update the rev_dict and return the new dict
-  def update_rev_dict(self,rev_dict,key):
-    if key in rev_dict:
-      rev_dict[key] = rev_dict[key] + 1;
-    else:
-      rev_dict[key] = 1
-    return rev_dict
+  ########################################################################
+  ####### OBSOLETE FOR NOW (ASSUME ALL FILES ARE SYNCED WHEN SYNC OCCURS)
+  ########################################################################
+##  def update_rev_dict(self,rev_dict,key):
+##    if key in rev_dict:
+##      rev_dict[key] = rev_dict[key] + 1;
+##    else:
+##      rev_dict[key] = 1
+##    return rev_dict
 
       
   
@@ -269,10 +293,12 @@ class ClientEncryption:
       enc_file = self.client_encrypt(file_name)
       # read revision number
       rev_no = self.get_rev_number()
+      self.inc_rev_number()
       # read private key in
       private_key = self.import_private_key()
       rng = Random.new().read
-      signature = private_key.sign(str(rev_no), rng)
+      tophash = self.get_personal_mt()._tophash
+      signature = private_key.sign(str((rev_no,tophash)), rng)
       # send tuple of filename, file message, revision number, and signature
       return
   
