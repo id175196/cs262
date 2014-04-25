@@ -10,6 +10,9 @@ class ClientEncryption:
   backup_path = 'bookkeeping'
   personal_path = 'personal'
   files_path = 'files'
+
+  ### functions to get certain file paths
+  
   # take a UUID and return the location for the private key file
   def private_foreign_key_loc(self, uuid):
       return os.path.join(self.directory, uuid, self.backup_path, "private_key.ppk")
@@ -26,6 +29,9 @@ class ClientEncryption:
   def foreign_files_loc(self,uuid):
       return os.path.join(self.directory, uuid, self.files_path)
 
+
+  ### merkle tree functions
+    
   # create merkle tree and store
   def make_personal_mt(self):
       mtree = mt.MarkleTree(self.files_loc)
@@ -37,7 +43,30 @@ class ClientEncryption:
   # take a UUID and return the merkle tree for all of their files
   def get_foreign_mt(self,uuid):
       return mt.MarkleTree(self.foreign_files_loc(uuid))
+  
 
+  ### revision number function
+
+  # get the revision number
+  def get_rev_number(self):
+    return int(open(self.rev_no_loc,'r').read())
+  # update the revision number
+  def inc_rev_number(self):
+    rev_no = self.get_rev_no() + 1
+    f = open(self.rev_no_loc,'w')
+    f.write(str(rev_no))
+    f.close()
+    return
+
+  # take a uuid and return the tuple message (revision number, tophash, and signature)
+  def get_foreign_rev_no(self,uuid,tup):
+      return pickling.unpickle_data(self.foreign_rev_no_loc())
+
+  # take a uuid and tuple message (revision number, tophash, and signature) and store
+  def store_foreign_rev_no(self,uuid,tup):
+      return pickling.pickle_data(tup,self.foreign_rev_no_loc())
+
+    
 
   def generate_public_keypair(self):
     random_generator = Random.new().read
@@ -136,20 +165,7 @@ class ClientEncryption:
           return RSA.importKey(open(self.public_key_loc, 'r').read())
       return RSA.importKey(open(self.public_foreign_key_loc(uuid), 'r').read())
 
-  # get the revision number
-  def get_rev_number(self):
-    return int(open(self.rev_no_loc,'r').read())
-  # update the revision number
-  def inc_rev_number(self):
-    rev_no = self.get_rev_no() + 1
-    f = open(self.rev_no_loc,'w')
-    f.write(str(rev_no))
-    f.close()
-    return
-
-  # get revision number given a uuid
-  def get_foreign_rev_no(self,uuid):
-    return 1
+  
   
   # get the revision number dictionary
   ########################################################################
@@ -188,7 +204,13 @@ class ClientEncryption:
 ##    else:
 ##      rev_dict[key] = 1
 ##    return rev_dict
-
+  
+  # take a file location and message and write to the file
+  def writefile(self,f_loc,f_message):
+    f = open(f_loc,'w')
+    f.write(f_message)
+    f.close()
+    return
       
   
   # A quick test
@@ -304,24 +326,26 @@ class ClientEncryption:
   
   # take a uuid, file name, file contents, revision number, and signature and encrypt using the public key of UUID
   # returning the encrypted tuple of the filename, file contents, revision number, and signature of the revision number
-  def encrypt_message(self, uuid, file_enc, file_enc_message, rev_no, signature):
+  def encrypt_message(self, uuid, file_enc, file_enc_message, rev_no, tophash, signature):
       public_key = self.import_public_key(uuid)
       f_enc_enc = public_key.encrypt(file_enc, 32)
       file_enc_message_enc = public_key.encrypt(file_enc_message, 32)
       rev_no_enc = public_key.encrypt(str(rev_no), 32)
+      tophash_enc = public_key.encrypt(str(tophash), 32)
       signature_enc = public_key.encrypt(str(signature[0]), 32)
-      return (f_enc_enc, file_enc_message_enc, rev_no_enc, signature_enc)
+      return (f_enc_enc, file_enc_message_enc, rev_no_enc, tophash, encsignature_enc)
   
   # take a message, which is a tuple of file name, file contents, revision number, and signature
   # and decrypt using local private key, returning the decryption of the tuple
   def decrypt_message(self, message):
-      (f_enc_enc, file_enc_message_enc, rev_no_enc, signature_enc) = message
+      (f_enc_enc, file_enc_message_enc, rev_no_enc, tophash_enc, signature_enc) = message
       private_key = self.import_private_key()
       f_enc = private_key.decrypt(f_enc_enc)
       file_enc_message = private_key.decrypt(file_enc_message_enc)
       rev_no = int(private_key.decrypt(rev_no_enc))
+      tophash = long(private_key.decrypt(tophash_enc))
       signature = (long(private_key.decrypt(str(signature_enc))),)
-      return (f_enc, file_enc_message, rev_no, signature)
+      return (f_enc, file_enc_message, rev_no, tophash, signature)
   
   # request for the downloaded file from a given addresss
   #######THIS IS CURRENTLY NOT WORKING(WAITING ON GOOGLE PROTOCOL BUFFERS)##########
@@ -333,6 +357,37 @@ class ClientEncryption:
       # remove the encrypted file
       os.remove(enc_file_loc)
       return
+
+  #function that takes a filename and address and prepares an encrypted message sent to UUID
+  def prepare_upload(self, filename, uuid):
+    enc_file = self.client_encrypt(file_name)
+    enc_file_message = open(enc_file,'r').read()
+    # read revision number
+    rev_no = self.get_rev_number()
+    self.inc_rev_number()
+    # read private key in
+    private_key = self.import_private_key()
+    rng = Random.new().read
+    tophash = self.get_personal_mt()._tophash
+    signature = private_key.sign(str((rev_no,tophash)), rng)
+    encrypted_message = self.encrypt_message(uuid, enc_file, enc_file_message, rev_no, tophash, signature)
+    return encrypted_message
+
+  #function that takes an encrypted message containing a file to store and then stores locally
+  def download_message(uuid, message):
+    (f_enc, file_enc_message, rev_no, tophash, signature) = self.decrypte_message(message)
+    private_key = self.import_private_key()
+    dec_sig = private_key.decrypt(signature)
+    #ensure that the signature matches what we expect
+    if(dec_sig == str((rev_no,tophash))):
+        #Assume that the file can be uploaded at this point, update all files to reflect this
+        file_loc = os.path.join(self.foreign_files_loc(uuid),f_enc);
+        self.writefile(file_loc,file_enc_message)
+        self.store_foreign_rev_no(uuid,(rev_no,tophash,signature))
+    else:
+        #throw some kind of error saying this is not a valid signature
+        print "this is not a valid signature!"
+    return
   
   # ##some serverside functions
   
