@@ -16,7 +16,7 @@ import copy
 from urllib2 import urlopen
 from collections import namedtuple
 
-# Named tuples have class-like semantics for accessing fields, but are straightforward to pickle/unpickle.
+# Named tuples have (immutable) class-like semantics for accessing fields, but are straightforward to pickle/unpickle.
 # The following types are for important data whose contents and format should be relatively stable at this point.
 PeerData = namedtuple('PeerData', 'ip_address, store_revisions')
 StoreData = namedtuple('StoreData', 'revision_data, peers')
@@ -28,17 +28,8 @@ class Peer:
   # Object fields #
   #################
   
-  # List this object's fields (what's the Pythonic way?)
   # FIXME: Beware the unsafety if accessing fields from multiple threads.
   listening_port = 51337 # TODO: Magic number. Ideally would want listening listening_port number to be configurable per peer.
-  # FIXME: This is actually creating class variables that are later obscured by instance variables as they're created. Get rid of them.
-#   metadata_file = None # Non-volatile storage for peer data.
-#   private_key_file = None
-#   x509_cert_file = None
-#   encryption = None
-#   debug_verbosity = None
-#   debug_preamble = None
-#   _metadata = Metadata(None, None, None, None)
   
   
   ##########################
@@ -67,6 +58,8 @@ class Peer:
     self.debug_print( (2, 'Generated new store ID: ' + store_id) )
     return store_id
   
+  # TODO: De-uglify
+  # FIXME: PyDoc
   # Use a file to permanently store certain metadata.
   def load_metadata_file(self):
     try:
@@ -123,6 +116,8 @@ class Peer:
     self.backup_metadata_file = self.metadata_file + '.bak'
     
     self.load_metadata_file()
+    
+    self.update_ip_address()
 
   ####################
   # Metadata methods #
@@ -195,7 +190,7 @@ class Peer:
         
   def record_store_association(self, peer_id, store_id):
     """
-    Permanently record the list of stores that connecting peers are associated
+    Permanently record the list of stores that other peers are associated
     with. Also, if the connecting peer is a backup for a store that this peer is
     also a backup for, update that store's metadata accordingly.
     """
@@ -295,6 +290,16 @@ class Peer:
         # The gossip indicates that more recent knowledge of the peer in question than we have
         self.record_peer_data(self, p_id, peer_dict[p_id])
     
+  def update_ip_address(self):
+    """Update this peer's already existing IP address data."""
+    # Create staging copy of data to be changed
+    peer_dict = copy.deepcopy(self.peer_dict())
+    
+    ip_address = json.load(urlopen('http://httpbin.org/ip'))['origin'] # FIXME: Would like to sign this
+    peer_data = PeerData(ip_address, peer_dict[self.peer_id].store_revisions)
+    peer_dict[self.peer_id] = peer_data
+    metadata = Metadata(self.peer_id, peer_dict, self.store_id, self.store_dict)
+    self.update_metadata(metadata)
     
   #################################
   # Encryption class interactions #
