@@ -165,6 +165,16 @@ class ClientEncryption:
           return RSA.importKey(open(self.public_key_loc, 'r').read())
       return RSA.importKey(open(self.public_foreign_key_loc(uuid), 'r').read())
 
+  # checks to see if files changed in directory since last time. If so, update revision number,
+  # Merkle tree, and return True. Else return false
+  def changed_personal_file_directory(self):
+    mtree = mt.MarkleTree(self.files_loc)
+    mtreeOld = self.get_personal_mt()
+    if mtree._tophash != mtreeOld_.tophash:
+      self.inc_rev_number()
+      self.make_personal_mt()
+      return True
+    return False
   
   
   # get the revision number dictionary
