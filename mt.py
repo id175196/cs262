@@ -4,13 +4,13 @@ import os
 import hashlib
 
 class MarkleTree:
-    def __init__(self, root):
+    def __init__(self, root, salt=''):
         self._linelength = 30
         self._root = root
         self._mt = {}
         self._hashlist = {}
         self._tophash = ''
-        self.__MT__()
+        self.__MT__(salt)
 
     def Line(self):
         print self._linelength*'-'
@@ -49,15 +49,15 @@ class MarkleTree:
             self._mt[hash] = value
         self._tophash = self._hashlist[self._root]
 
-    def __MT__(self):
-        self.HashList(self._root)
+    def __MT__(self, salt=''):
+        self.HashList(self._root, salt)
         #self.PrintHashList()
         self.MT()
         print "Merkle Tree for %s: " % self._root
         self.PrintMT(self._tophash)
         self.Line()
 
-    def md5sum(self, data):
+    def md5sum(self, data, salt=''):
         m = hashlib.md5()
         fn = os.path.join(self._root, data)
         if os.path.isfile(fn):
@@ -70,6 +70,7 @@ class MarkleTree:
                 if not d:
                     break
                 m.update(d)
+            m.update(salt)
             f.close()
         else:
             m.update(data)
@@ -87,7 +88,7 @@ class MarkleTree:
             value.sort()
         return value
     
-    def HashList(self, rootdir):
+    def HashList(self, rootdir, salt=''):
         self.HashListChild(rootdir)
         items = self.GetItems(rootdir)
         if not items:
@@ -96,7 +97,7 @@ class MarkleTree:
         s = ''
         for subitem in items:
             s = s + self._hashlist[subitem]
-        self._hashlist[rootdir] = self.md5sum(s)
+        self._hashlist[rootdir] = self.md5sum(s, salt)
 
     def HashListChild(self, rootdir):
         items = self.GetItems(rootdir)

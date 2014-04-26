@@ -41,8 +41,8 @@ class ClientEncryption:
   def get_personal_mt(self):
       mt_pickling.unpickle_data(self.mt_loc)
   # take a UUID and return the merkle tree for all of their files
-  def get_foreign_mt(self,uuid):
-      return mt.MarkleTree(self.foreign_files_loc(uuid))
+  def get_foreign_mt(self,uuid, salt=''):
+      return mt.MarkleTree(self.foreign_files_loc(uuid), salt='')
   
 
   ### revision number function
@@ -212,7 +212,11 @@ class ClientEncryption:
     f.close()
     return
       
-  
+  def write_pubkey(self,uuid,f_message):
+    f_loc = self.public_foreign_key_loc(uuid)
+    self.writefile(f_loc, f_message)
+    return
+ 
   # A quick test
   def test(self):
       message = "test! Very nice!"
@@ -362,16 +366,21 @@ class ClientEncryption:
   def prepare_upload(self, filename, uuid):
     enc_file = self.client_encrypt(file_name)
     enc_file_message = open(enc_file,'r').read()
+    # Increment revision number.
+    self.inc_rev_number()
+    signature, rev_no, tophash = self.get_signed_revision()
+    encrypted_message = self.encrypt_message(uuid, enc_file, enc_file_message, rev_no, tophash, signature)
+    return encrypted_message
+
+  def get_signed_revision(self):
     # read revision number
     rev_no = self.get_rev_number()
-    self.inc_rev_number()
     # read private key in
     private_key = self.import_private_key()
     rng = Random.new().read
     tophash = self.get_personal_mt()._tophash
     signature = private_key.sign(str((rev_no,tophash)), rng)
-    encrypted_message = self.encrypt_message(uuid, enc_file, enc_file_message, rev_no, tophash, signature)
-    return encrypted_message
+    return signature, rev_no, tophash
 
   #function that takes an encrypted message containing a file to store and then stores locally
   def download_message(uuid, message):
