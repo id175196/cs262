@@ -24,6 +24,106 @@ StoreData = namedtuple('StoreData', 'revision_data, peers')
 Metadata = namedtuple('Metadata', 'peer_id, peer_dict, store_id, store_dict')
 
 class Peer:
+  #########################
+  # Primary functionality #
+  #########################
+  
+  # These are the goods, implemented at a higher level than what follows.
+
+  def __init__(self, directory=os.getcwd(), debug_verbosity=0, debug_prefix=None):
+    """Initialize a `Peer` object."""
+    self.debug_verbosity = debug_verbosity
+    self.debug_preamble = debug_prefix
+    
+    # Get the encryption object
+    self.encryption = client_encryption.ClientEncryption(directory) # FIXME: On first run_peer_server, need `ClientEncryption` to initialize directory structure and sign revision 0.
+    
+    self.private_key_file = self.encryption.private_key_loc
+    self.x509_cert_file = self.encryption.x509_cert_loc
+    self.metadata_file = os.path.join(self.encryption.personal_path_full,'metadata_file.pickle')
+    self.backup_metadata_file = self.metadata_file + '.bak'
+    
+    self.load_metadata_file()
+    
+    self.update_ip_address()
+
+     
+  def run_peer_server(self):
+    skt_listener = self.create_listening_socket()
+    skt_listener.listen(1) # FIXME: Will need to deal with multiple peer clients eventually
+    skt_raw, (peer_ip, _) = skt_listener.accept()
+    skt_ssl = ssl.wrap_socket(skt_raw, server_side=True, keyfile=self.private_key_file, certfile=self.x509_cert_file, ssl_version=ssl.PROTOCOL_SSLv3)
+    try:
+      self.peer_server_session(skt_ssl, peer_ip)
+    except:
+      skt_ssl.shutdown(socket.SHUT_RDWR)
+      skt_ssl.close()
+      
+
+  def peer_server_session(self, skt_ssl, peer_ip):
+    # Get the peer client's handshake request.
+    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['handshake_req'])
+    # Unpickle message data from `'handshake_req'` message type.
+    (client_peer_id, client_peer_dict) = self.unpickle('handshake_req', pickled_payload)
+    
+    # FIXME: For known client peers, will want to verify the public key provided to the SSL.
+    
+    # The peer client's knowledge of itself is at least as up to date as ours, so attempt to get up to date.
+    self.record_peer_data(client_peer_id, client_peer_dict[client_peer_id])
+    
+    # Parse useful gossip from the peer client's peer dictionary
+    self.learn_metadata_gossip(client_peer_dict)
+    
+    # If the peer client is in our dictionary (i.e. we share a store with them), handshake back.
+    if client_peer_id in self.peer_dict.keys():
+      self.send_handshake_req(skt_ssl)
+    # Otherwise, disconnect.
+    else:
+      self.send_disconnect_req(skt_ssl, 'No stores in common.')
+      raise Exception() # TODO: At least provide a specific exception type to parse.
+
+    # Get the peer client's sync request.
+    pickled_payload = self.receive_expected_message(skt_ssl, 'sync_req')
+    store_id, merkel_tree = self.unpickle('sync_req', pickled_payload)
+    
+
+    # Session over, send the peer client a disconnect request.
+    self.send_disconnect_req(skt_ssl, 'Session complete.')
+  
+      
+  def peer_client_session(self, skt_ssl):
+    # Initiate handshake with the peer server, providing pertinent metadata about ourselves and gossip.
+    self.send_handshake_req(skt_ssl)
+    
+    # Get the server's response handshake.
+    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['handshake_req'])
+    (server_peer_id, server_peer_dict) = self.unpickle('handshake_req', pickled_payload)
+    
+    # The peer server's knowledge of itself is at least as up to date as ours, so trust what it says.
+    self.record_peer_data(server_peer_id, server_peer_dict[server_peer_id])
+    
+    # Parse useful gossip from the peer server's peer dictionary
+    self.learn_metadata_gossip(server_peer_dict)
+
+    # Select a store to sync with the peer server.
+    store_id = self.select_sync_store(server_peer_id, server_peer_dict)
+    
+    # Quit the session if we couldn't find a store to sync.
+    if not store_id:
+      self.send_disconnect_req(skt_ssl, 'No stores to sync.')
+      # FIXME: Raise a meaningful exception.
+      raise Exception()
+    
+    # Initiate a sync.
+    self.send_sync_req(skt_ssl, store_id)
+    
+    
+    # Session over, get the peer server's disconnect request
+    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['disconnect_req'])
+    disconnect_message = self.unpickle('disconnect_req', pickled_payload)
+    self.debug_print( [(1, 'Peer requested disconnect reporting the following:'),
+                       (1, disconnect_message)] )
+
   
   ####################
   # Class attributes #
@@ -136,22 +236,6 @@ class Peer:
     return metadata
     
   
-  def __init__(self, directory=os.getcwd(), debug_verbosity=0, debug_prefix=None):
-    self.debug_verbosity = debug_verbosity
-    self.debug_preamble = debug_prefix
-    
-    # Get the encryption object
-    self.encryption = client_encryption.ClientEncryption(directory) # FIXME: On first run, need `ClientEncryption` to initialize directory structure and sign revision 0.
-    
-    self.private_key_file = self.encryption.private_key_loc
-    self.x509_cert_file = self.encryption.x509_cert_loc
-    self.metadata_file = os.path.join(self.encryption.personal_path_full,'metadata_file.pickle')
-    self.backup_metadata_file = self.metadata_file + '.bak'
-    
-    self.load_metadata_file()
-    
-    self.update_ip_address()
-
   ####################
   # Metadata methods #
   ####################
@@ -429,81 +513,6 @@ class Peer:
     return skt
   
   
-  def peer_client_session(self, skt_ssl):
-    # Initiate handshake with the peer server, providing pertinent metadata about ourselves and gossip.
-    self.send_handshake_req(skt_ssl)
-    
-    # Get the server's response handshake.
-    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['handshake_req'])
-    (server_peer_id, server_peer_dict) = self.unpickle('handshake_req', pickled_payload)
-    
-    # The peer server's knowledge of itself is at least as up to date as ours, so trust what it says.
-    self.record_peer_data(server_peer_id, server_peer_dict[server_peer_id])
-    
-    # Parse useful gossip from the peer server's peer dictionary
-    self.learn_metadata_gossip(server_peer_dict)
-
-    # Select a store to sync with the peer server.
-    store_id = self.select_sync_store(server_peer_id, server_peer_dict)
-    
-    # Quit the session if we couldn't find a store to sync.
-    if not store_id:
-      self.send_disconnect_req(skt_ssl, 'No stores to sync.')
-      # FIXME: Raise a meaningful exception.
-      raise Exception()
-    
-    # Initiate a sync.
-    self.send_sync_req(skt_ssl, store_id)
-    
-    
-    # Session over, get the peer server's disconnect request
-    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['disconnect_req'])
-    disconnect_message = self.unpickle('disconnect_req', pickled_payload)
-    self.debug_print( [(1, 'Peer requested disconnect reporting the following:'),
-                       (1, disconnect_message)] )
-
-  
-  def peer_server_session(self, skt_ssl, peer_ip):
-    # Get the peer client's handshake request.
-    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['handshake_req'])
-    # Unpickle message data from `'handshake_req'` message type.
-    (client_peer_id, client_peer_dict) = self.unpickle('handshake_req', pickled_payload)
-    
-    # FIXME: For known client peers, will want to verify the public key provided to the SSL.
-    
-    # The peer client's knowledge of itself is at least as up to date as ours, so attempt to get up to date.
-    self.record_peer_data(client_peer_id, client_peer_dict[client_peer_id])
-    
-    # Parse useful gossip from the peer client's peer dictionary
-    self.learn_metadata_gossip(client_peer_dict)
-    
-    # If the peer client is in our dictionary (i.e. we share a store with them), handshake back.
-    if client_peer_id in self.peer_dict.keys():
-      self.send_handshake_req(skt_ssl)
-    # Otherwise, disconnect.
-    else:
-      self.send_disconnect_req(skt_ssl, 'No stores in common.')
-      raise Exception() # TODO: At least provide a specific exception type to parse.
-
-    # Get the peer client's sync request.
-    pickled_payload = self.receive_expected_message(skt_ssl, 'sync_req')
-    store_id, merkel_tree = self.unpickle('sync_req', pickled_payload)
-    
-
-    # Session over, send the peer client a disconnect request.
-    self.send_disconnect_req(skt_ssl, 'Session complete.')
-      
-  def run(self):
-    skt_listener = self.create_listening_socket()
-    skt_listener.listen(1) # FIXME: Will need to deal with multiple peer clients eventually
-    skt_raw, (peer_ip, _) = skt_listener.accept()
-    skt_ssl = ssl.wrap_socket(skt_raw, server_side=True, keyfile=self.private_key_file, certfile=self.x509_cert_file, ssl_version=ssl.PROTOCOL_SSLv3)
-    try:
-      self.peer_server_session(skt_ssl, peer_ip)
-    except:
-      skt_ssl.shutdown(socket.SHUT_RDWR)
-      skt_ssl.close()
-      
   def select_sync_store(self, peer_id, peer_dict):
     """
     Select which of a peer server's stores to sync with.
