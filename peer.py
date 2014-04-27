@@ -5,7 +5,7 @@ import socket
 import ssl
 import client_encryption
 import os
-import cPickle # Supposed to be orders of magnitude faster than `pickle`, but with some limitations on serializing new classes.
+import cPickle # Supposed to be orders of magnitude faster than `pickle`, but with some limitations limitations on (esoteric) subclassing of `Pickler`/`Unpickler`.
 import hashlib
 import random
 import shutil
@@ -24,9 +24,9 @@ Metadata = namedtuple('Metadata', 'peer_id, peer_dict, store_id, store_dict')
 
 class Peer:
   
-  #################
-  # Object fields #
-  #################
+  ####################
+  # Class attributes #
+  ####################
   
   # FIXME: Beware the unsafety if accessing fields from multiple threads.
   listening_port = 51337 # TODO: Magic number. Ideally would want listening listening_port number to be configurable per peer.
@@ -39,7 +39,7 @@ class Peer:
   def generate_peer_id(self):
     """
     Generate a quasi-unique ID for this peer using a hash (SHA-256, which
-    currently has no known collisions) of the user's public key "salted with a
+    currently has no known collisions) of the user's public key "salted" with a
     random number.
     """
     peer_unique_string = self.encryption.import_public_key().exportKey() + str(random.SystemRandom().random())
@@ -87,7 +87,7 @@ class Peer:
         peer_id = self.generate_peer_id()
         store_id = self.generate_store_id()
         ip_address = json.load(urlopen('http://httpbin.org/ip'))['origin'] # FIXME: Would like to sign this
-        revision_data = self.get_rev_data(store_id)
+        revision_data = self.encryption.get_signed_revision()
         peer_dict = {peer_id: PeerData(ip_address, {store_id: revision_data})}
         store_dict = {store_id: StoreData(revision_data, set([peer_id]))}
         
@@ -187,7 +187,7 @@ class Peer:
                        (2, 'store_id = {}'.format(self.store_id)),
                        (2, 'store_dict = {}'.format(self.store_dict))] )
 
-        
+  # FIXME: Untested
   def record_store_association(self, peer_id, store_id):
     """
     Permanently record the list of stores that other peers are associated
@@ -317,7 +317,7 @@ class Peer:
   # Encryption class interactions #
   #################################
   
-  # Associate a store to a peer
+  # FIXME: Rewrite
   def associate_store(self, peer_id, store_id):
     """
     Associate a store this peer has been requested to back up with some other
@@ -326,40 +326,55 @@ class Peer:
     """
     if store_id not in self.store_dict.keys():
       # Initialize the directory structure to back up this store
-      # FIXME: DO ACTUAL WORK HERE
+      # FIXME: Pending implementation in `ClientEncryption`
       self.debug_print( (1, 'Creating storage for new store.') )
       None
     # Ensure this store association is recorded
     self.record_store_association(peer_id, store_id)
     
-  def record_peer_key(self, peer_pubkey):
-    # FIXME: DO THE WORK. Also, will want to store these independently of the store directories so we can easily check the public key of 
-    None
+  def record_peer_pubkey(self, peer_id, peer_pubkey):
+    """
+    Used to record a peer's public key upon first encounter. The key is 
+    subsequently used to verify SSL connections and signatures.
+    """
+    # Public key should be passed as text, so write out directly to the appropriate file.
+    self.encryption.write_pubkey(peer_id, peer_pubkey)
 
-  def get_rev_data(self, store_id):
+  def record_store_pubkey(self, peer_id, peer_pubkey):
     """
-    Determine what revision of the specified store we have.
+    Used to record a store's public key when upon association. The key is 
+    subsequently used for signature verification.
     """
+    # NOTE: This is identical to the above function for peers, but affords the flexibility to quickly change the implementation later.
+    # Public key should be passed as text, so write out directly to the appropriate file.
+    self.encryption.write_pubkey(peer_id, peer_pubkey)
+
     
-    #FIXME: Implement
-    None
-    
-  def gt_revision_number(self, revision_a, revision_b):
+  def gt_revision_number(self, store_id, revision_data_1, revision_data_2):
     """
-    Returns `True` if both revisions verify and revision A is numbered higher
-    than B.
+    Returns `True` if `revision_data_1` passes signature verification and either 
+    is later than `revision_data_2` or that revision fails signature verification.
     """
-    # FIXME
-    return True
+    if not self.verify_rev_number(store_id, revision_data_1):
+      return False
     
-  def verify_rev_number(self, store_id):
+    if not self.verify_rev_number(store_id, revision_data_2):
+      return True
+    
+    # FIXME: Figure out real way to extract revision numbers.
+    if revision_data_1.revision_number > revision_data_2.revision_number:
+      return True
+    else:
+      return False
+    
+  def verify_rev_number(self, store_id, revision_data):
     """
     Verify the signature of a received revision number.
     """
+    # FIXME: Implement.
+    return True
     
-    # FIXME: Implement. Also, how do we know who the store's owner is? Will need to set that during store creation.
-    None
-    
+  # FIXME
   ########################
   # Steady-state methods #
   ########################
@@ -372,6 +387,7 @@ class Peer:
     skt = ssl.wrap_socket( socket.socket(socket.AF_INET, socket.SOCK_STREAM), ssl_version=ssl.PROTOCOL_SSLv3)
     skt.connect((peer_ip, self.listening_port))
     return skt
+  
   
   def create_listening_socket(self):
     skt = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
@@ -446,7 +462,36 @@ class Peer:
     except:
       skt_ssl.shutdown(socket.SHUT_RDWR)
       skt_ssl.close()
-
+      
+  def choose_sync_store(self, store_dict):
+    """
+    Select which of a peer server's stores to sync with.
+    """
+    # Only interested in stores we're already associated with.
+    mutual_stores = set(self.store_dict.keys()).intersection(set(store_dict.keys()))
+    
+    potential_stores = set()
+    
+    # Identify which stores the peer server has a later revision for.
+    for store_id in mutual_stores:
+      if self.gt_revision_number(store_dict[store_id], self.store_dict[store_id]):
+        potential_stores.add(store_id)
+        
+    # If the peer server doesn't have any updates for us, see if we have updates for them.
+    if not potential_stores:
+      for store_id in mutual_stores:
+        if self.gt_revision_number(self.store_dict[store_id], store_dict[store_id]):
+          potential_stores.add(store_id)
+    
+    # If we are both at the same revision for all mutual stores, we will check one another.
+    if not potential_stores:
+      # Note that in order for two peers to get this far into communications,
+      #  they must have at least one store in common.
+      potential_stores = mutual_stores
+      
+    return random.sample(potential_stores, 1)[0]
+  
+  
   #####################
   # Messaging methods #
   #####################
