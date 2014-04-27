@@ -29,6 +29,10 @@ class ClientEncryption:
   def foreign_files_loc(self,uuid):
       return os.path.join(self.directory, uuid, self.files_path)
 
+  # get personal files location
+  def get_personal_files_loc(self):
+      return os.path.join(self.directory, self.personal_path, self.files_path)
+
 
   ### merkle tree functions
     
@@ -84,50 +88,29 @@ class ClientEncryption:
                           ' -out ' + self.x509_cert_loc,
                           shell=True)    
     
-  # initialized pubic and private key of personal computer
-  def __init__(self, directory=os.getcwd()):
-    
-      # Set up file locations
-      self.directory = directory
-      self.personal_path_full = os.path.join(self.directory, self.personal_path)
-      self.private_key_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "private_key.ppk")
-      self.public_key_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "public_key.PEM")
-      self.x509_cert_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "x509.PEM")
-      self.personal_encrypter_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "personal_encrypter.txt")
-      self.rev_no_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "rev_no.txt")
-      self.mt_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "mtree.mt")
-      self.files_loc = os.path.join(self.directory, self.personal_path, self.files_path)
-      
-      if(os.path.isdir(self.directory) != True):
-          os.makedirs(self.directory)
-      if(os.path.isdir(os.path.join(self.directory, self.personal_path)) != True):
-          os.makedirs(os.path.join(self.directory, self.personal_path))
-      if(os.path.isdir(self.files_loc) != True):
-          os.makedirs(self.files_loc)
-      if(os.path.isdir(os.path.join(self.directory, self.personal_path, self.backup_path)) != True):
-          os.makedirs(os.path.join(self.directory, self.personal_path, self.backup_path))
-          
-      # Generate the RSA key pair and certificate if they don't exist
-      if not (os.path.isfile(self.private_key_loc) and os.path.isfile(self.public_key_loc)):
-        self.generate_public_keypair()
-        self.generate_x509_cert()
-      
-      f_personal = open(self.personal_encrypter_loc, 'w')
-      f_rev = open(self.rev_no_loc, 'w')
-      
-      f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
-      f_personal.write(Random.get_random_bytes(8))
-      f_rev.write('1')
+  # initialize the directory for a given uuid, 
+  # assume the public key has already been stored.
+  # uuid is the UUID of the peer to store data for
+  def init_remote(self, uuid,validation_tup):
+      if(os.path.isdir(os.path.join(self.directory, uuid)) != True):
+          os.makedirs(os.path.join(self.directory, uuid))
+      if(os.path.isdir(os.path.join(self.directory, uuid, self.backup_path)) != True):
+          os.makedirs(os.path.join(self.directory, uuid, self.backup_path))
+      if(os.path.isdir(os.path.join(self.directory, uuid, self.files_path)) != True):
+          os.makedirs(os.path.join(self.directory, uuid, self.files_path))
+      self.store_foreign_rev_no(uuid,validation_tup)
+      return
 
-      f_personal.close()
-      f_rev.close();
-
-      
+  #function that takes in message and uses personal key to decrypt and then store file.
+  def peer_download(self,f_loc_enc,f_message_enc):
+      self.writefile(os.path.join(self.personal_files_loc(),f_loc_enc),f_message_enc)
+      f_loc = self.client_decrypt(f_loc_enc)
+      os.remove(f_loc_enc)
       return
   
   # initialize public and private keys of a foreign computer given the uuid.
   #this is for testing purposes ONLY!!!!
-  def init_remote(self, uuid):
+  def init_remote_test(self, uuid):
       random_generator = Random.new().read
       key = RSA.generate(1024, random_generator)
       if(os.path.isdir(self.directory) != True):
