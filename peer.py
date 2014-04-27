@@ -15,6 +15,7 @@ import json
 import copy
 from urllib2 import urlopen
 from collections import namedtuple
+import mt # Here because `unpickle_sync_req` and `unpickle_sync_resp` unpickle Merkel trees. But I'm still not certain this import is necessary...
 
 # Named tuples have (immutable) class-like semantics for accessing fields, but are straightforward to pickle/unpickle.
 # The following types are for important data whose contents and format should be relatively stable at this point.
@@ -28,7 +29,28 @@ class Peer:
   # Class attributes #
   ####################
   
-  # FIXME: Beware the unsafety if accessing fields from multiple threads.
+  message_ids = {'handshake_req': 0,
+                 'sync_req': 1,
+                 'sync_resp': 2, # FIXME
+                 'update_file_req': 3, # FIXME
+                 'delete_file_req': 4, # FIXME
+                 'verify_sync_req': 5, # FIXME: Provide salt for Merkle tree, update peer's revision data upon verification 
+                 'verify_sync_resp': 6, # FIXME
+                 'disconnect_req': 7 # FIXME
+                 }
+  
+  unpicklers = {'handshake_req': Peer.unpickle_handshake_req,
+                'sync_req': Peer.unpickle_sync_req,
+                'sync_resp': 2, # FIXME
+                'update_file_req': 3, # FIXME
+                'delete_file_req': 4, # FIXME
+                'verify_sync_req': 5, # FIXME: Provide salt for Merkle tree, update peer's revision data upon verification 
+                'verify_sync_resp': 6, # FIXME
+                'disconnect_req': 7 # FIXME
+                }
+  
+  
+  # FIXME: Beware the unsafety if accessing mutable fields from multiple threads.
   listening_port = 51337 # TODO: Magic number. Ideally would want listening listening_port number to be configurable per peer.
   
   
@@ -306,7 +328,7 @@ class Peer:
       gossip_revisions = [peer_dict[peer_id].store_revisions[s_id] for s_id in peer_mutual_stores]
       recorded_revisions = [self.peer_dict[peer_id].store_revisions[s_id] for s_id in peer_mutual_stores]
       # Compare what the gossip says this peer knows against what we've recorded
-      if (any(self.gt_revision_number(g_rev, r_rev) for g_rev, r_rev in zip(gossip_revisions, recorded_revisions))):
+      if (any(self.gt_revision_data(g_rev, r_rev) for g_rev, r_rev in zip(gossip_revisions, recorded_revisions))):
         # The gossip indicates more recent knowledge of the peer in question than we have
         self.record_peer_data(peer_id, peer_dict[peer_id])
     
@@ -342,7 +364,7 @@ class Peer:
 
   def record_store_pubkey(self, peer_id, peer_pubkey):
     """
-    Used to record a store's public key when upon association. The key is 
+    Used to record a store's public key upon association. The key is 
     subsequently used for signature verification.
     """
     # NOTE: This is identical to the above function for peers, but affords the flexibility to quickly change the implementation later.
@@ -350,18 +372,20 @@ class Peer:
     self.encryption.write_pubkey(peer_id, peer_pubkey)
 
     
-  def gt_revision_number(self, store_id, revision_data_1, revision_data_2):
+  def gt_revision_data(self, store_id, revision_data_1, revision_data_2):
     """
     Returns `True` if `revision_data_1` passes signature verification and either 
     is later than `revision_data_2` or that revision fails signature verification.
     """
-    if not self.verify_rev_number(store_id, revision_data_1):
+    # `revision_data_1` is `None` or its signature doesn't verify.
+    if (not revision_data_1) or (not self.verify_rev_number(store_id, revision_data_1)):
       return False
     
-    if not self.verify_rev_number(store_id, revision_data_2):
+    # `revision_data_2` is `None` or its signature doesn't verify.
+    if (not revision_data_2) or (not self.verify_rev_number(store_id, revision_data_2)):
       return True
     
-    # FIXME: Figure out real way to extract revision numbers.
+    # FIXME: Figure out proper way to extract revision numbers.
     if revision_data_1.revision_number > revision_data_2.revision_number:
       return True
     else:
@@ -374,6 +398,15 @@ class Peer:
     """
     # FIXME: Implement.
     return True
+  
+  def get_merkel_tree(self, store_id):
+    """Get the locally computed Merkel tree for a store."""
+    # Own store
+    if store_id == self.store_id:
+      return self.encryption.get_personal_mt()
+    # Peer's store
+    else:
+      return self.encryption.get_foreign_mt(store_id)
     
   # FIXME: Incorrect title.
   ########################
@@ -397,60 +430,67 @@ class Peer:
   
   
   def peer_client_session(self, skt_ssl):
-    # Identify yourself to the peer server.
+    # Initiate handshake with the peer server, providing pertinent metadata about ourselves and gossip.
     self.send_handshake_req(skt_ssl)
     
     # Get the server's response handshake.
-    message_id, pickled_payload = self.receive(skt_ssl)
-    if message_id != message_ids['handshake_req']:
-      self.handle_unexpected_message(message_id, pickled_payload)
-      raise Exception()
-    # Unpickle message data from `'handshake_req'` message type.
-    (peer_id, peer_dict) = unpickle(pickled_payload)
-    self.debug_print( [(1, 'Received handshake from peer server.'),
-                       (2, 'peer_id = '+peer_id),
-                       (2, 'peer_dict:'),
-                       (2, peer_dict)] )
+    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['handshake_req'])
+    (server_peer_id, server_peer_dict) = self.unpickle('handshake_req', pickled_payload)
     
-    # The peer server's knowledge of itself is at least as up to date as ours, so attempt to get up to date.
-    self.record_peer_data(peer_id, peer_dict[peer_id])
+    # The peer server's knowledge of itself is at least as up to date as ours, so trust what it says.
+    self.record_peer_data(server_peer_id, server_peer_dict[server_peer_id])
     
     # Parse useful gossip from the peer server's peer dictionary
-    self.learn_metadata_gossip(peer_dict)
+    self.learn_metadata_gossip(server_peer_dict)
+
+    # Select a store to sync with the peer server.
+    store_id = self.select_sync_store(server_peer_id, server_peer_dict)
     
-    message_id, pickled_payload = self.receive(skt_ssl)
-    self.handle_unexpected_message(message_id, pickled_payload)
+    # Quit the session if we couldn't find a store to sync.
+    if not store_id:
+      self.send_disconnect_req(skt_ssl, 'No stores to sync.')
+      # FIXME: Raise a meaningful exception.
+      raise Exception()
+    
+    # Initiate a sync.
+    self.send_sync_req(skt_ssl, store_id)
+    
+    
+    # Session over, get the peer server's disconnect request
+    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['disconnect_req'])
+    disconnect_message = self.unpickle('disconnect_req', pickled_payload)
+    self.debug_print( [(1, 'Peer requested disconnect reporting the following:'),
+                       (1, disconnect_message)] )
 
   
   def peer_server_session(self, skt_ssl, peer_ip):
     # Get the peer client's handshake request.
-    (message_id, pickled_payload) = self.receive(skt_ssl)
-    if message_id != message_ids['handshake_req']:
-      self.handle_unexpected_message(message_id, pickled_payload)
-      raise Exception()
+    pickled_payload = self.receive_expected_message(skt_ssl, self.message_ids['handshake_req'])
     # Unpickle message data from `'handshake_req'` message type.
-    (peer_id, peer_dict) = unpickle(pickled_payload)
-    self.debug_print( [(1, 'Received handshake from peer client.'),
-                       (2, 'peer_id = '+peer_id),
-                       (2, 'peer_dict:'),
-                       (2, peer_dict)] )
+    (client_peer_id, client_peer_dict) = self.unpickle('handshake_req', pickled_payload)
     
     # FIXME: For known client peers, will want to verify the public key provided to the SSL.
     
     # The peer client's knowledge of itself is at least as up to date as ours, so attempt to get up to date.
-    self.record_peer_data(peer_id, peer_dict[peer_id])
+    self.record_peer_data(client_peer_id, client_peer_dict[client_peer_id])
     
     # Parse useful gossip from the peer client's peer dictionary
-    self.learn_metadata_gossip(peer_dict)
+    self.learn_metadata_gossip(client_peer_dict)
     
     # If the peer client is in our dictionary (i.e. we share a store with them), handshake back.
-    if peer_id in self.peer_dict.keys():
+    if client_peer_id in self.peer_dict.keys():
       self.send_handshake_req(skt_ssl)
     # Otherwise, disconnect.
     else:
       self.send_disconnect_req(skt_ssl, 'No stores in common.')
       raise Exception() # TODO: At least provide a specific exception type to parse.
-          
+
+    # Get the peer client's sync request.
+    pickled_payload = self.receive_expected_message(skt_ssl, 'sync_req')
+    store_id, merkel_tree = self.unpickle('sync_req', pickled_payload)
+    
+
+    # Session over, send the peer client a disconnect request.
     self.send_disconnect_req(skt_ssl, 'Session complete.')
       
   def run(self):
@@ -464,7 +504,7 @@ class Peer:
       skt_ssl.shutdown(socket.SHUT_RDWR)
       skt_ssl.close()
       
-  def choose_sync_store(self, peer_id, peer_dict):
+  def select_sync_store(self, peer_id, peer_dict):
     """
     Select which of a peer server's stores to sync with.
     """
@@ -476,23 +516,28 @@ class Peer:
     
     potential_stores = set()
     
-    # Identify which stores the peer server has a later revision for.
+    # Consider stores which the peer server has a later revision for.
     for store_id in mutual_stores:
-      if self.gt_revision_number(store_revisions[store_id], self.store_dict[store_id]):
+      if self.gt_revision_data(store_revisions[store_id], self.store_dict[store_id]):
         potential_stores.add(store_id)
         
-    # If the peer server doesn't have any updates for us, see if we have updates for them.
+    # If the peer server doesn't have any updates for us, consider updates we have for them.
     if not potential_stores:
       for store_id in mutual_stores:
-        if self.gt_revision_number(self.store_dict[store_id], store_revisions[store_id]):
+        if self.gt_revision_data(self.store_dict[store_id], store_revisions[store_id]):
           potential_stores.add(store_id)
     
-    # If we are both at the same revision for all mutual stores, we will check one another.
+    # If we are both at the same revision for all mutual stores, we will verify one another's revision for some mutual store.
     if not potential_stores:
-      # Note that in order for two peers to get this far into communications,
-      #  they must have at least one store in common.
-      potential_stores = mutual_stores
-      
+      # Only consider the mutual stores for which both ends have a valid revision.
+      for store_id in mutual_stores:
+        if self.store_dict[store_id] and store_revisions[store_id]:
+          potential_stores.add(store_id)
+          
+    # Return `None` if we couldn't find a store to sync.
+    if not potential_stores:
+      return None
+    # Otherwise, choose a random store from the determined options.
     return random.sample(potential_stores, 1)[0]
   
   
@@ -506,32 +551,22 @@ class Peer:
     pickled_message = cPickle.dumps(message_body)
     skt.send(struct.pack('!I', len(pickled_message))+pickled_message)
     
-  
   def send_handshake_req(self, skt):
-    message_id = message_ids['handshake_req']
+    message_id = self.message_ids['handshake_req']
     message_data = (self.peer_id, self.peer_dict)
     self.send(skt, message_id, message_data)
     
-  def send_identity_ack(self, skt):
-    message_id = message_ids['identity_ack']
-    message_data = None
+  def send_sync_req(self, skt, store_id):
+    message_id = self.message_ids['sync_req']
+    message_data = (store_id, self.get_merkel_tree(store_id))
     self.send(skt, message_id, message_data)
-      
-  def send_assoc_req(self, skt):
-    message_id = message_ids['assoc_req']
-    message_data = (self.peer_id, self.store_id)
-    self.send(skt, message_id, message_data)
-      
-  def send_assoc_ack(self, skt):
-    message_id = message_ids['assoc_ack']
-    message_data = self.encryption.import_public_key().exportKey() # Own public key in string format
-    self.send(skt, message_id, message_data)
-    
+        
   def send_disconnect_req(self, skt, disconnect_message):
-    message_id = message_ids['disconnect_req']
+    message_id = self.message_ids['disconnect_req']
     message_data = disconnect_message
     self.send(skt, message_id, message_data)    
-      
+
+     
   def receive(self, skt):
     message_buffer = skt.recv(4096)
     length_received = len(message_buffer)
@@ -544,19 +579,62 @@ class Peer:
       if length_received < (length + 4):
         message_buffer += skt.recv((length + 4) - length_received)
       
+      # Message has incorrect length.
+      if len(message_buffer) != (length + 4):
+        # FIXME: Provide a meaningful exception.
+        raise Exception()
+      
       # Unpickle the message contents
       pickled_message = message_buffer[4:4+length]
       (message_id, pickled_payload) = cPickle.loads(pickled_message)
       return message_id, pickled_payload
+  
+  
+  def receive_expected_message(self, skt, expected_message_id):
+    """
+    Receive a message, automatically handling situations where the message was 
+    not of the type expected.
+    """
+    message_id, pickled_payload = self.receive(skt)
+    if message_id != expected_message_id:
+      self.handle_unexpected_message(message_id, pickled_payload)
+      # FIXME: Use a more specific exception.
+      raise Exception()
+    return pickled_payload
+    
     
   def handle_unexpected_message(self, message_id, pickled_payload):
-    if message_id == message_ids['disconnect_req']:
+    if message_id == self.message_ids['disconnect_req']:
       # Unpickle message data from `'disconnect_req'` message type.
-      disconnect_message = unpickle(pickled_payload)
+      disconnect_message = self.unpickle('disconnect_req', pickled_payload)
       self.debug_print( [(1, 'Peer requested disconnect, reporting the following:'),
                          (1, disconnect_message)] )
     else:
       self.debug_print_bad_message(message_id, pickled_payload)
+
+
+  def unpickle(self, message_type, pickled_payload):
+    return self.unpicklers[message_type](self, pickled_payload)
+  
+      
+  def unpickle_handshake_req(self, pickled_payload):
+    (peer_id, peer_dict) = cPickle.loads(pickled_payload)
+    self.debug_print( [(1, 'Unpickled a \'handshake_req\' message.'),
+                       (2, 'peer_id = '+peer_id),
+                       (2, 'peer_dict:'),
+                       (2, peer_dict)] )
+    return (peer_id, peer_dict)
+
+
+  def unpickle_sync_req(self, pickled_payload):
+    (store_id, merkel_tree) = cPickle.loads(pickled_payload)
+    self.debug_print( [(1, 'Unpickled a \'sync_req\' message.'),
+                       (2, 'store_id = '+store_id),
+                       (4, 'merkel_tree:')] )
+    if self.debug_verbosity >= 4:
+      merkel_tree.PrintHashList()
+    return (store_id, merkel_tree)
+
 
   #################################
   # Debug and development methods #
@@ -601,7 +679,7 @@ class Peer:
       
       # Create a copy of our `peer_dict` for staging changes and insert the new metadata.
       peer_dict = copy.deepcopy(self.peer_dict)
-      peer_dict[peer_id] = peer_dict
+      peer_dict[peer_id] = peer_data
       
       # Enact the changes.
       metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict)
@@ -644,13 +722,18 @@ class Peer:
         
         print text
     print
-    
+
+
   def debug_print_bad_message(self, message_id, pickled_payload):
-    self.debug_print( [(1, 'Unexpected message received. All sessions must begin with the peer client sending a handshake request.'),
-                       (2, 'message_id = {}'.format(message_id)),
-                       (2, 'Unpickled payload:'),
-                       (2, unpickle(pickled_payload))] )
+    self.debug_print( (1, 'Unexpected message received.'))
     
+    # Lookup by value, an abuse of the dictionary type...
+    message_type = [m_type for m_type, m_id in self.message_ids.items() if m_id == message_id][0]
+    
+    # Allow this message type's unpickler the opportunity to debug print a description of the message.
+    self.unpickle(message_type, pickled_payload)
+
+
   #########
   # Tests #
   #########
@@ -732,6 +815,7 @@ def test_ssl():
   t2.join()
   t1.join()
 
+
 def test_handshake():
   print 'Executing peer handshake test.'
   import threading
@@ -745,29 +829,11 @@ def test_handshake():
   t2.join()
   t1.join()
 
-def unpickle(pickled_payload):
-  return cPickle.loads(pickled_payload)
-
-message_ids = {'handshake_req': 0,
-               'sync_req': 1, # FIXME
-               'sync_resp': 2, # FIXME
-               'update_file_req': 3, # FIXME
-               'delete_file_req': 4, # FIXME
-               'verify_sync_req': 5, # FIXME: Provide salt for Merkle tree, update peer's revision data upon verification 
-               'verify_sync_resp': 6, # FIXME
-               'disconnect_req': 7 # FIXME
-               }
-
-# unpicklers = {'handshake_req': unpickle_handshake_req,
-#               #'identity_ack': Has no data to unpickle
-#               'assoc_req': unpickle_assoc_req,
-#               'assoc_ack': unpickle_assoc_ack
-#               }
 
 
-    
 def main():
   test_handshake()
+
 
 if __name__ == '__main__':
   main()
