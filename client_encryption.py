@@ -225,7 +225,7 @@ class ClientEncryption:
   ##### YOUR STUFF
   def complex_test(self):
       uuid = '100'
-      self.init_remote(uuid)
+      self.init_remote_test(uuid)
       # the following is an excerpt of the Meissner bodies paragraph on Wikipedia's Reuleasux tetrahedron
       full_text = "Meissner and Schilling[2] showed how to modify the Reuleaux tetrahedron to form a surface of constant width"  # open file and write text to file, then close
       f_loc = os.path.join(self.directory, 'complex_test.txt')
