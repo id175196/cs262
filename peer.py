@@ -39,7 +39,7 @@ class Peer:
   def generate_peer_id(self):
     """
     Generate a quasi-unique ID for this peer using a hash (SHA-256, which
-    currently has no known collisions) of the user's public key "salted" with a
+    currently has no known collisions) of the owner's public key "salted" with a
     random number.
     """
     peer_unique_string = self.encryption.import_public_key().exportKey() + str(random.SystemRandom().random())
@@ -48,13 +48,17 @@ class Peer:
     return peer_id
     
 
-  def generate_store_id(self):
+  def generate_store_id(self, public_key=None):
     """
     Store IDs are meant to uniquely identify a store/user. They are essentially
     the RSA public key, but we use use their SHA-256 hash to "flatten" them to
     a shorter, predictable length.
     """
-    store_id = hashlib.sha256(self.encryption.import_public_key().exportKey()).digest()
+    # Default to using own public key.
+    if not public_key:
+      public_key = self.encryption.import_public_key()
+      
+    store_id = hashlib.sha256(public_key.exportKey()).digest()
     self.debug_print( (2, 'Generated new store ID: ' + store_id) )
     return store_id
   
@@ -82,18 +86,9 @@ class Peer:
         else:
           raise Exception()
       except:
-        self.debug_print( (2,'Backup metadata file not found. Generating new file.') )
-        # Prepare initial values.
-        peer_id = self.generate_peer_id()
-        store_id = self.generate_store_id()
-        ip_address = json.load(urlopen('http://httpbin.org/ip'))['origin'] # FIXME: Would like to sign this
-        revision_data = self.encryption.get_signed_revision()
-        peer_dict = {peer_id: PeerData(ip_address, {store_id: revision_data})}
-        store_dict = {store_id: StoreData(revision_data, set([peer_id]))}
-        
-        # Load the initial values into a `Metadata` object.
-        metadata = Metadata(peer_id, peer_dict, store_id, store_dict)
-        # Immediately write out to non-volatile storage.
+        self.debug_print( (2,'Backup metadata file not found. Generating new file.') )        
+        metadata = self.generate_initial_metadata()
+        # Immediately write out to non-volatile storage since `update_metadata()` expects a pre-existing file to be made the backup.
         with open(self.metadata_file, 'w') as f:
           cPickle.dump(metadata, f)
     finally:  
@@ -101,7 +96,23 @@ class Peer:
       self._metadata = Metadata(None, None, None, None) # Create a null object to update against.
       self.update_metadata(metadata)
 
-  
+  def generate_initial_metadata(self):
+    """
+    Generate a peer's important metadata the first time it is instantiated.
+    """
+    peer_id = self.generate_peer_id()
+    store_id = self.generate_store_id()
+    ip_address = json.load(urlopen('http://httpbin.org/ip'))['origin'] # FIXME: Would like to sign this
+    
+    # FIXME: Idempotently initialize/ensure personal directory structure here including initial revision number.
+    revision_data = self.encryption.get_signed_revision()
+    peer_dict = {peer_id: PeerData(ip_address, {store_id: revision_data})}
+    store_dict = {store_id: StoreData(revision_data, set([peer_id]))}
+    
+    # Load the initial values into a `Metadata` object.
+    metadata = Metadata(peer_id, peer_dict, store_id, store_dict)
+    return metadata
+    
   
   def __init__(self, directory=os.getcwd(), debug_verbosity=0, debug_prefix=None):
     self.debug_verbosity = debug_verbosity
@@ -186,42 +197,45 @@ class Peer:
                        (2, 'peer_dict = {}'.format(self.peer_dict)),
                        (2, 'store_id = {}'.format(self.store_id)),
                        (2, 'store_dict = {}'.format(self.store_dict))] )
+    
+    
+#   # FIXME: Untested
+#   def record_store_association(self, peer_id, store_id):
+#     """
+#     Permanently record the list of stores that other peers are associated
+#     with. Also, if the connecting peer is a backup for a store that this peer is
+#     also a backup for, update that store's metadata accordingly.
+#     """
+#     # Do nothing if this peer's associations were already known
+#     if (store_id in self.store_dict.keys()) and \
+#         (peer_id in self.store_dict[store_id].peers) and \
+#         (peer_id in self.peer_dict.keys()) and \
+#         (store_id in self.peer_dict[peer_id].stores):
+#       return
+#     
+#     self.debug_print( [(1, 'Recording new store association.'), 
+#                        (2, 'peer_id = ' + peer_id + ', store_id=' + store_id)])
+#     
+#     # Create a copy of the peer metadata to stage the new changes.
+#     peer_dict = self.peer_dict.copy()
+#     peer_dict[peer_id].stores.add(store_id)
+#     
+#     # Create a copy of the store metadata to stage the new changes.
+#     store_dict = self.store_dict.copy()
+#     
+#     # Creating a new store
+#     if store_id not in self.store_dict.keys():
+#       store_data = StoreData(0, set()) # FIXME: Will need actual revision number format rather than `0`.
+#     # The previously known store only needs to be amended.
+#     else:
+#       store_data = copy.deepcopy(self.store_dict[store_id]) # Named tuples (and tuples in general) require deep copying... I think.
+#     store_data.peers.add(peer_id)
+#     # FIXME: Will also want to record this peer's revision number.
+#     store_dict[store_id] = store_data
+#     
+#     metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict)
+#     self.update_metadata(metadata)
 
-  # FIXME: Untested
-  def record_store_association(self, peer_id, store_id):
-    """
-    Permanently record the list of stores that other peers are associated
-    with. Also, if the connecting peer is a backup for a store that this peer is
-    also a backup for, update that store's metadata accordingly.
-    """
-    # Do nothing if this peer's associations were already known
-    if (store_id in self.store_dict.keys()) and \
-        (peer_id in self.store_dict[store_id].peers) and \
-        (store_id in self.peer_dict[peer_id].stores):
-      return
-    
-    self.debug_print( [(1, 'Recording new store association.'), 
-                       (2, 'peer_id = ' + peer_id + ', store_id=' + store_id)])
-    
-    # Create a copy of the peer metadata to stage the new changes.
-    peer_dict = self.peer_dict.copy()
-    peer_dict[peer_id].stores.add(store_id)
-    
-    # Create a copy of the store metadata to stage the new changes.
-    store_dict = self.store_dict.copy()
-    
-    # Creating a new store
-    if store_id not in self.store_dict.keys():
-      store_data = StoreData(0, set()) # FIXME: Will need actual revision number format rather than `0`.
-    # The previously known store only needs to be amended.
-    else:
-      store_data = copy.deepcopy(self.store_dict[store_id]) # Named tuples (and tuples in general) require deep copying... I think.
-    store_data.peers.add(peer_id)
-    # FIXME: Will also want to record this peer's revision number.
-    store_dict[store_id] = store_data
-    
-    metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict)
-    self.update_metadata(metadata)
 
   def record_peer_data(self, peer_id, peer_data):
     """
@@ -317,21 +331,6 @@ class Peer:
   # Encryption class interactions #
   #################################
   
-  # FIXME: Rewrite
-  def associate_store(self, peer_id, store_id):
-    """
-    Associate a store this peer has been requested to back up with some other
-    peer that it is communicating with (initializing the directory structure for
-    a new store, if necessary.
-    """
-    if store_id not in self.store_dict.keys():
-      # Initialize the directory structure to back up this store
-      # FIXME: Pending implementation in `ClientEncryption`
-      self.debug_print( (1, 'Creating storage for new store.') )
-      None
-    # Ensure this store association is recorded
-    self.record_store_association(peer_id, store_id)
-    
   def record_peer_pubkey(self, peer_id, peer_pubkey):
     """
     Used to record a peer's public key upon first encounter. The key is 
@@ -339,6 +338,7 @@ class Peer:
     """
     # Public key should be passed as text, so write out directly to the appropriate file.
     self.encryption.write_pubkey(peer_id, peer_pubkey)
+
 
   def record_store_pubkey(self, peer_id, peer_pubkey):
     """
@@ -366,7 +366,8 @@ class Peer:
       return True
     else:
       return False
-    
+
+  
   def verify_rev_number(self, store_id, revision_data):
     """
     Verify the signature of a received revision number.
@@ -374,7 +375,7 @@ class Peer:
     # FIXME: Implement.
     return True
     
-  # FIXME
+  # FIXME: Incorrect title.
   ########################
   # Steady-state methods #
   ########################
@@ -463,24 +464,27 @@ class Peer:
       skt_ssl.shutdown(socket.SHUT_RDWR)
       skt_ssl.close()
       
-  def choose_sync_store(self, store_dict):
+  def choose_sync_store(self, peer_id, peer_dict):
     """
     Select which of a peer server's stores to sync with.
     """
+    # Get the communicating peer server's list of stores and respective revision data.
+    store_revisions = peer_dict[peer_id].store_revisions
+    
     # Only interested in stores we're already associated with.
-    mutual_stores = set(self.store_dict.keys()).intersection(set(store_dict.keys()))
+    mutual_stores = set(self.store_dict.keys()).intersection(set(store_revisions.keys()))
     
     potential_stores = set()
     
     # Identify which stores the peer server has a later revision for.
     for store_id in mutual_stores:
-      if self.gt_revision_number(store_dict[store_id], self.store_dict[store_id]):
+      if self.gt_revision_number(store_revisions[store_id], self.store_dict[store_id]):
         potential_stores.add(store_id)
         
     # If the peer server doesn't have any updates for us, see if we have updates for them.
     if not potential_stores:
       for store_id in mutual_stores:
-        if self.gt_revision_number(self.store_dict[store_id], store_dict[store_id]):
+        if self.gt_revision_number(self.store_dict[store_id], store_revisions[store_id]):
           potential_stores.add(store_id)
     
     # If we are both at the same revision for all mutual stores, we will check one another.
@@ -558,6 +562,52 @@ class Peer:
   # Debug and development methods #
   #################################
   
+  # TODO: Generalize a subset of this functionality to support the future scenario where a central server would initiate such an association.
+  def manually_associate(self, peer_id, ip_address, public_key_file):
+    """
+    Manually associate with a peer and prepare to be a backup for that peer's store.
+    """
+    # Idempotency. Also, might've already learned about this peer through gossip about a mutual store. 
+    if peer_id not in self.peer_dict.keys():
+      # Copy the public key and associate it to the specified peer.
+      shutil.copyfile(public_key_file, self.encryption.public_foreign_key_loc(peer_id))
+    
+    # Get the key object for the public key and generate the corresponding store ID
+    public_key = self.encryption.import_public_key(peer_id)
+    # Calculate the store ID that corresponds to this public key.
+    store_id = self.generate_store_id(public_key)
+
+    # Idempotency.
+    if store_id not in self.store_dict.keys():
+      # Store another copy of the key assigned to its store ID.
+      shutil.copyfile(public_key_file, self.encryption.public_foreign_key_loc(store_id))
+      
+      # Initialize the directory structure to back up this store.
+      # FIXME: Need to thoroughly examine the effects of setting the `validation_tup` argument to `None`.
+      self.encryption.init_remote(store_id, None)
+      
+      # Create a copy of our `store_dict` for staging changes and insert the new metadata.
+      store_dict = copy.deepcopy(self.store_dict)
+      store_data = StoreData(revision_data=None, peers=set([peer_id]))
+      store_dict[store_id] = store_data
+      
+      # Prepare the corresponding changes to our `peer_dict`
+      if peer_id in self.peer_dict.keys():
+        store_revisions = self.peer_dict[peer_id].store_revisions
+      else:
+        store_revisions = dict()
+      store_revisions[store_id] = None
+      peer_data = PeerData(ip_address, store_revisions)
+      
+      # Create a copy of our `peer_dict` for staging changes and insert the new metadata.
+      peer_dict = copy.deepcopy(self.peer_dict)
+      peer_dict[peer_id] = peer_dict
+      
+      # Enact the changes.
+      metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict)
+      self.update_metadata(metadata)
+    
+    
   def debug_print(self, print_tuples):
     """
     Optionally print based on the object's verbosity setting and the required
