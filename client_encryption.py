@@ -28,10 +28,13 @@ class ClientEncryption:
   # take a UUID and return the location of their files.
   def foreign_files_loc(self,uuid):
       return os.path.join(self.directory, uuid, self.files_path)
+  # take a UUID and return the bookkeeping location of files
+  def foreign_backup_loc(self,uuid):
+      return os.path.join(self.directory, uuid, self.backup_path)
 
   # get personal files location
   def get_personal_files_loc(self):
-      return os.path.join(self.directory, self.personal_path, self.files_path)
+      return os.path.join(self.directory, self.personal_path, self.backup_path)
 
 
   ### merkle tree functions
@@ -152,27 +155,7 @@ class ClientEncryption:
       os.remove(f_loc_enc)
       return
   
-  # initialize public and private keys of a foreign computer given the uuid.
-  #this is for testing purposes ONLY!!!!
-  def init_remote_test(self, uuid):
-      random_generator = Random.new().read
-      key = RSA.generate(1024, random_generator)
-      if(os.path.isdir(self.directory) != True):
-          os.makedirs(self.directory)
-      f_private = open(self.private_foreign_key_loc(uuid), 'w')
-      f_public = open(self.public_foreign_key_loc(uuid), 'w')
-      f_personal = open(self.personal_foreign_encrypter_loc(uuid), 'w')
-      f_rev = open(self.foreign_rev_no_loc(uuid), 'wb')
-      f_private.write(key.exportKey())
-      f_public.write(key.publickey().exportKey())
-      f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
-      f_personal.write(Random.get_random_bytes(8))
-      pickle.dump(dict(),f_rev)
-      f_private.close()
-      f_public.close()
-      f_personal.close()
-      f_rev.close();
-      return
+
   
   
   # read in the personal DES key used to encrypt files to be sent and decrypt downloaded files
@@ -279,7 +262,7 @@ class ClientEncryption:
       # encrypt the file using local encryption key
       f_enc = self.client_encrypt(f_loc)
       f_enc_message = open(f_enc, 'r').read()
-      rev_dict = self.get_rev_dict()
+      rev_dict = self.get_rev_number()
       rev_no = 1
       rng = Random.new().read
       private_key = self.import_private_key()
@@ -468,5 +451,48 @@ class ClientEncryption:
           return rev_no < rev_no_personal
 
 
+  #testing suite
+
+  # initialize public and private keys of a foreign computer given the uuid.
+  #this is for testing purposes ONLY!!!!
+  def init_remote_test(self, uuid):
+      random_generator = Random.new().read
+      key = RSA.generate(1024, random_generator)
+
+      if(os.path.isdir(os.path.join(self.directory,uuid)) != True):
+          os.makedirs(os.path.join(self.directory,uuid))
+      if(os.path.isdir(self.foreign_files_loc(uuid)) != True):
+          os.makedirs(self.foreign_files_loc(uuid))
+      if(os.path.isdir(self.foreign_backup_loc(uuid)) != True):
+          os.makedirs(self.foreign_backup_loc(uuid))
+      f_private = open(self.private_foreign_key_loc(uuid), 'w')
+      f_public = open(self.public_foreign_key_loc(uuid), 'w')
+      f_personal = open(self.personal_foreign_encrypter_loc(uuid), 'w')
+      f_rev = open(self.foreign_rev_no_loc(uuid), 'wb')
+      f_private.write(key.exportKey())
+      f_public.write(key.publickey().exportKey())
+      f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
+      f_personal.write(Random.get_random_bytes(8))
+      f_rev.write('1')
+      f_private.close()
+      f_public.close()
+      f_personal.close()
+      f_rev.close()
+      return
+
+  # initialize a peer, check to make sure their keys exists  
+  def init_peer_test(self):
+    peer_uuid = '100'
+    self.init_remote_test(peer_uuid)
+    print os.path.exists(self.private_foreign_key_loc(peer_uuid))
+    print os.path.exists(self.public_foreign_key_loc(peer_uuid))
+    print os.path.exists(self.private_foreign_key_loc(peer_uuid))
+    print self.private_foreign_key_loc(peer_uuid)
+
+  # init
+    
+    
+
 if __name__ == '__main__':
   ClientEncryption().complex_test()
+  ClientEncryption().init_peer_test()
