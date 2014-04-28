@@ -468,5 +468,5 @@ class ClientEncryption:
           return rev_no < rev_no_personal
 
 
-def __main__():
+if __name__ == '__main__':
   ClientEncryption().complex_test()

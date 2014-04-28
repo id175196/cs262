@@ -253,35 +253,35 @@ def mt_file_diffs(mt_new, mt_old):
   return updated_files, deleted_files
 
 
-#if __name__ == "__main__":
-mt_a = MarkleTree('testA')
-print mt_a._mt
-mt_b = MarkleTree('testB')
-#MTDiff(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
-vals = mtDiffLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
-#mtMissLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
-
-
-a_tophash = mt_a._tophash
-b_tophash = mt_b._tophash
-deleted_files = list()
-if a_tophash != b_tophash:
-    a_value = mt_a._mt[a_tophash] 
-    a_child = a_value[1]    # retrive the child list for merkle tree a
-    b_value = mt_b._mt[b_tophash] 
-    b_child = b_value[1]    # retrive the child list for merkle tree b
-    for itemhash, item in b_child.iteritems():
-        if not(item in a_child.values()):
-            print "Info: Missing : %s" % item
-            deleted_files.append(item)
-        try:
-            if a_child[itemhash] == item:
-                skip = 1
-        except:
-            temp_value = mt_b._mt[itemhash]
-            if len(temp_value[1]) > 0:      # check if this is a directory
-                diffhash = list(set(b_child.keys()) - set(a_child.keys()))
-                deleted_files += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
-
+if __name__ == "__main__":
+  mt_a = MarkleTree('testA')
+  print mt_a._mt
+  mt_b = MarkleTree('testB')
+  #MTDiff(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
+  vals = mtDiffLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
+  #mtMissLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
+  
+  
+  a_tophash = mt_a._tophash
+  b_tophash = mt_b._tophash
+  deleted_files = list()
+  if a_tophash != b_tophash:
+      a_value = mt_a._mt[a_tophash] 
+      a_child = a_value[1]    # retrive the child list for merkle tree a
+      b_value = mt_b._mt[b_tophash] 
+      b_child = b_value[1]    # retrive the child list for merkle tree b
+      for itemhash, item in b_child.iteritems():
+          if not(item in a_child.values()):
+              print "Info: Missing : %s" % item
+              deleted_files.append(item)
+          try:
+              if a_child[itemhash] == item:
+                  skip = 1
+          except:
+              temp_value = mt_b._mt[itemhash]
+              if len(temp_value[1]) > 0:      # check if this is a directory
+                  diffhash = list(set(b_child.keys()) - set(a_child.keys()))
+                  deleted_files += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
+  
 
 
