@@ -67,11 +67,11 @@ class ClientEncryption:
 
   # take a uuid and return the tuple message (revision number, tophash, and signature)
   def get_foreign_rev_no(self,uuid):
-      return pickling.unpickle_data(self.foreign_rev_no_loc())
+      return mt_pickling.unpickle_data(self.foreign_rev_no_loc())
 
   # take a uuid and tuple message (revision number, tophash, and signature) and store
   def store_foreign_rev_no(self,uuid,tup):
-      return pickling.pickle_data(tup,self.foreign_rev_no_loc())
+      return mt_pickling.pickle_data(tup,self.foreign_rev_no_loc())
 
     
 
@@ -197,7 +197,7 @@ class ClientEncryption:
   def changed_personal_file_directory(self):
     mtree = mt.MarkleTree(self.files_loc)
     mtreeOld = self.get_personal_mt()
-    if mtree._tophash != mtreeOld_.tophash:
+    if mtree._tophash != mtreeOld._tophash:
       self.inc_rev_number()
       self.make_personal_mt()
       return True
@@ -374,7 +374,7 @@ class ClientEncryption:
       rev_no_enc = public_key.encrypt(str(rev_no), 32)
       tophash_enc = public_key.encrypt(str(tophash), 32)
       signature_enc = public_key.encrypt(str(signature[0]), 32)
-      return (f_enc_enc, file_enc_message_enc, rev_no_enc, tophash, encsignature_enc)
+      return (f_enc_enc, file_enc_message_enc, rev_no_enc, tophash, signature_enc)
   
   # take a message, which is a tuple of file name, file contents, revision number, and signature
   # and decrypt using local private key, returning the decryption of the tuple
@@ -401,7 +401,7 @@ class ClientEncryption:
 
   #function that takes a filename and address and prepares an encrypted message sent to UUID
   def prepare_upload(self, filename, uuid):
-    enc_file = self.client_encrypt(file_name)
+    enc_file = self.client_encrypt(filename)
     enc_file_message = open(enc_file,'r').read()
     # Increment revision number.
     self.inc_rev_number()
@@ -420,7 +420,7 @@ class ClientEncryption:
     return signature, rev_no, tophash
 
   #function that takes an encrypted message containing a file to store and then stores locally
-  def download_message(uuid, message):
+  def download_message(self, uuid, message):
     (f_enc, file_enc_message, rev_no, tophash, signature) = self.decrypte_message(message)
     private_key = self.import_private_key()
     dec_sig = private_key.decrypt(signature)
@@ -459,12 +459,12 @@ class ClientEncryption:
 
 
   # check to see whether uuid's signature is newer or not
-  def is_peer_rev_no_newer(client_uuid, peer_uuid, tup):
+  def is_peer_rev_no_newer(self, client_uuid, peer_uuid, tup):
       (rev_no, tophash, sig) = tup
       public_key = self.import_public_key(client_uuid)
       #make sure that the signaturue is valid
       if (str((rev_no,tophash)) == public_key.decrypt(sig)):
-          (rev_no_personal,tophash_personal,sig_personal) = self.get_foreign_rev_no(slient_uuid)
+          (rev_no_personal,tophash_personal,sig_personal) = self.get_foreign_rev_no(client_uuid)
           return rev_no < rev_no_personal
 
 
