@@ -146,7 +146,7 @@ def MTDiff(mt_a, a_tophash, mt_b, b_tophash):
 
 #function that returns list of files mt_a is missing
 def mtMissLocs(mt_a, a_tophash, mt_b, b_tophash):
-    missings = list()
+    deleted_files = list()
     if a_tophash != b_tophash:
         a_value = mt_a._mt[a_tophash] 
         a_child = a_value[1]    # retrive the child list for merkle tree a
@@ -155,7 +155,7 @@ def mtMissLocs(mt_a, a_tophash, mt_b, b_tophash):
         for itemhash, item in b_child.iteritems():
             if not (itemhash in a_child):
                 print "Info: Missing : %s" % item
-                missings.append(item)
+                deleted_files.append(item)
             try:
                 if a_child[itemhash] == item:
                     skip = 1
@@ -163,9 +163,9 @@ def mtMissLocs(mt_a, a_tophash, mt_b, b_tophash):
                 temp_value = mt_b._mt[itemhash]
                 if len(temp_value[1]) > 0:      # check if this is a directory
                     diffhash = list(set(b_child.keys()) - set(a_child.keys()))
-                    missings += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
+                    deleted_files += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
 
-    return missings
+    return deleted_files
 
 #This is my slightly different version of MTDiff where it returns a list of
 #file locations that are different
@@ -201,9 +201,58 @@ def mtLocs(mt_a,mt_b):
     a_tophash = mt_a._tophash
     b_tophash = mt_b._tophash
     return(mtDiffLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash), mtMissLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash))
-           
 
-                
+
+# Newly added function by Esmail Fadae.
+# A modified copy of other functions elsewhere in this file that returns lists of updated files (without directories) and deleted files.
+def mt_file_diffs(mt_new, mt_old):
+  """
+  Determine which files in a directory have been changed or deleted by comparing 
+  a new Merkel tree of it to an older one.
+  """
+  updated_files = list()
+  if a_tophash != b_tophash:
+    a_value = mt_a._mt[a_tophash] 
+    a_child = a_value[1]    # retrive the child list for merkle tree a
+    b_value = mt_b._mt[b_tophash] 
+    b_child = b_value[1]    # retrive the child list for merkle tree b
+    for itemhash, item in a_child.iteritems():
+      if (itemhash not in b_child) and \
+        (os.path.isfile(os.path.join(mt_new._root, item))):
+        updated_files.append(item)
+      try:
+        if b_child[itemhash] == item:
+          None
+      except:
+        temp_value = mt_a._mt[itemhash]
+        if len(temp_value[1]) > 0:      # check if this is a directory
+          diffhash = list(set(b_child.keys()) - set(a_child.keys()))
+          updated_files += mtDiffLocs(mt_a, itemhash, mt_b, diffhash[0])
+        elif (os.path.isfile(os.path.join(mt_new._root, item))):
+            updated_files.append(item)
+  
+  deleted_files = list()
+  if a_tophash != b_tophash:
+    a_value = mt_a._mt[a_tophash] 
+    a_child = a_value[1]    # retrive the child list for merkle tree a
+    b_value = mt_b._mt[b_tophash] 
+    b_child = b_value[1]    # retrive the child list for merkle tree b
+    for itemhash, item in b_child.iteritems():
+      if not(item in a_child.values()):
+        None
+        deleted_files.append(item)
+      try:
+        if a_child[itemhash] == item:
+          skip = 1
+      except:
+        temp_value = mt_b._mt[itemhash]
+        if len(temp_value[1]) > 0:      # check if this is a directory
+          diffhash = list(set(b_child.keys()) - set(a_child.keys()))
+          deleted_files += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
+          
+  return updated_files, deleted_files
+
+
 #if __name__ == "__main__":
 mt_a = MarkleTree('testA')
 print mt_a._mt
@@ -215,7 +264,7 @@ vals = mtDiffLocs(mt_a, mt_a._tophash, mt_b, mt_b._tophash)
 
 a_tophash = mt_a._tophash
 b_tophash = mt_b._tophash
-missings = list()
+deleted_files = list()
 if a_tophash != b_tophash:
     a_value = mt_a._mt[a_tophash] 
     a_child = a_value[1]    # retrive the child list for merkle tree a
@@ -224,7 +273,7 @@ if a_tophash != b_tophash:
     for itemhash, item in b_child.iteritems():
         if not(item in a_child.values()):
             print "Info: Missing : %s" % item
-            missings.append(item)
+            deleted_files.append(item)
         try:
             if a_child[itemhash] == item:
                 skip = 1
@@ -232,7 +281,7 @@ if a_tophash != b_tophash:
             temp_value = mt_b._mt[itemhash]
             if len(temp_value[1]) > 0:      # check if this is a directory
                 diffhash = list(set(b_child.keys()) - set(a_child.keys()))
-                missings += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
+                deleted_files += mtMissLocs(mt_a, itemhash, mt_b, diffhash[0])
 
 
 

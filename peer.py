@@ -447,9 +447,9 @@ class Peer:
     self.update_metadata(metadata)
     
     
-  #################################
-  # Encryption class interactions #
-  #################################
+  ##################################
+  # Encryption object interactions #
+  ##################################
   
   def record_peer_pubkey(self, peer_id, peer_pubkey):
     """
@@ -497,6 +497,7 @@ class Peer:
     # FIXME: Implement.
     return True
   
+  
   def get_merkel_tree(self, store_id):
     """Get the locally computed Merkel tree for a store."""
     # Own store
@@ -507,6 +508,16 @@ class Peer:
       return self.encryption.get_foreign_mt(store_id)
     
 
+  def diff_store_to_merkel_tree(self, store_id, mt_old):
+    """
+    Compute the difference between the current contents of the specified store 
+    and those indicated by the older, provided Merkel tree.
+    """
+    mt_new = self.encryption.get_foreign_mt(store_id)
+    
+    updated_files, deleted_files = mt.mt_file_diffs(mt_new, mt_old)
+    return updated_files, deleted_files
+    
   #########################
   # Communication helpers #
   #########################
@@ -600,7 +611,7 @@ class Peer:
     pickled_payload = self.receive_expected_message(skt, 'merkel_tree_msg')
     merkel_tree = self.unpickle('merkel_tree_msg', pickled_payload)
     
-    #updated_files, deleted_files = self.diff_store_merkel_tree(store_id, merkel_tree)
+    updated_files, deleted_files = self.diff_store_to_merkel_tree(store_id, merkel_tree)
     
   #####################
   # Messaging methods #
