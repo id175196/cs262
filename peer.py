@@ -18,7 +18,7 @@ from urllib2 import urlopen
 from collections import namedtuple
 import mt # Here because we unpickle Merkel trees. I'm still not certain this import is actually necessary...
 import threading
-
+import time
 
 # Named tuples have (immutable) class-like semantics for accessing fields, but are straightforward to pickle/unpickle.
 # The following types are for important data whose contents and format should be relatively stable at this point.
@@ -62,6 +62,32 @@ class Peer:
     
     self.update_ip_address()
 
+
+  def run(self, client_sleep_time=5):
+    """Start operating as a both a peer client and peer server."""
+    peer_server_thread = threading.Thread(target=self.run_peer_server, args=())
+    peer_client_thread = threading.Thread(target=self.run_peer_client, args=(client_sleep_time))
+    peer_server_thread.start()
+    peer_client_thread.start()
+
+  def run_peer_client(self, sleep_time):
+    while True:
+      # FIXME: STUB. Update revision number upon change to personal store.
+      
+      # Find a peer to connect to and initiate a session.
+      peer_id = self.select_sync_peer()
+      
+      if peer_id:
+        skt_ssl = self.connect_to_peer(peer_id)
+        try:
+          self.peer_client_session(skt_ssl)
+        finally:
+          skt_ssl.shutdown(socket.SHUT_RDWR)
+          skt_ssl.close()
+      
+      # Sleep a while before iterating the loop again.
+      time.sleep(sleep_time)
+    
      
   def run_peer_server(self):
     skt_listener = self.create_listening_socket()
@@ -334,8 +360,8 @@ class Peer:
                        (2, 'store_dict = {}'.format(self.store_dict))] )
     
     
-#   # FIXME: Untested
-#   def record_store_association(self, peer_id, store_id):
+#   # FIXME: Would want similar functionality for server requested associations
+#   def record_store_association(self, peer_id, store_id, lock=False):
 #     """
 #     Permanently record the list of stores that other peers are associated
 #     with. Also, if the connecting peer is a backup for a store that this peer is
@@ -347,6 +373,11 @@ class Peer:
 #         (peer_id in self.peer_dict.keys()) and \
 #         (store_id in self.peer_dict[peer_id].stores):
 #       return
+#     
+#     # Make sure we have the lock before proceeding
+#     if not lock:
+#       self.lock.acquire()
+#       lock = True
 #     
 #     self.debug_print( [(1, 'Recording new store association.'), 
 #                        (2, 'peer_id = ' + peer_id + ', store_id=' + store_id)])
@@ -650,6 +681,7 @@ class Peer:
     peer_store_revisions = self.peer_dict[peer_id].store_revisions
     
     # Only interested in stores the peer also has.
+    # FIXME: I don't think the mutuality check is necessary anymore...
     mutual_stores = set(peer_store_revisions.keys())
     
     potential_stores = set()
@@ -677,6 +709,48 @@ class Peer:
       return None
     # Otherwise, choose a random store from the determined options.
     return random.sample(potential_stores, 1)[0]
+  
+  
+  def select_sync_peer(self):
+    """
+    Select which peer to sync with.
+    """
+    potential_peers = set()
+    
+    # Compile a set of peers who (reportedly) have newer revisions of our stores.
+    for peer_id in self.peer_dict.keys():
+      peer_store_revisions = self.peer_dict[peer_id].store_revisions
+      for store_id in peer_store_revisions:
+        if self.gt_revision_data(peer_store_revisions[store_id], self.store_dict[store_id].revision_data):
+          potential_peers.add(peer_id)
+          # No need to check the revision data for this peer's other synced stores
+          break
+    
+    # If no peers have newer revisions for us, compile peers for whom we have newer revisions
+    if not potential_peers:
+      for peer_id in self.peer_dict.keys():
+        peer_store_revisions = self.peer_dict[peer_id].store_revisions
+        for store_id in peer_store_revisions:
+          if self.gt_revision_data(self.store_dict[store_id].revision_data, peer_store_revisions[store_id]):
+            potential_peers.add(peer_id)
+            # No need to check the revision data for this peer's other synced stores
+            break
+    
+    # Otherwise, consider any peer with whom we share a valid revision.
+    if not potential_peers:
+      for peer_id in self.peer_dict.keys():
+        peer_store_revisions = self.peer_dict[peer_id].store_revisions
+        for store_id in peer_store_revisions:
+          if self.store_dict[store_id].revision_data and peer_store_revisions[store_id]:
+            potential_peers.add(peer_id)
+            # No need to check the revision data for this peer's other synced stores
+            break
+    
+    # Return `None` if we couldn't find a store to sync.
+    if not potential_peers:
+      return None
+    # Otherwise, choose a random store from the determined options.
+    return random.sample(potential_peers, 1)[0]
   
   
   def determine_sync_type(self, peer_id, store_id):
