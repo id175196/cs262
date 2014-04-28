@@ -150,8 +150,7 @@ class Peer:
     elif sync_type == 'send':
       self.sync_send(skt, peer_id, store_id)
     elif sync_type == 'check':
-      # FIXME: Skip ahead to salted verification.
-      None
+      self.sync_check(skt, peer_id, store_id)
     else:
       # FIXME: Raise a meaningful exception
       raise Exception()
@@ -441,9 +440,13 @@ class Peer:
     # Create staging copy of data to be changed
     peer_dict = copy.deepcopy(self.peer_dict)
     
-    ip_address = json.load(urlopen('http://httpbin.org/ip'))['origin'] # FIXME: Would like to sign this
+    # Get and store the IP address
+    # FIXME: Would like to sign this data (probably the whole `PeerData` object).
+    ip_address = json.load(urlopen('http://httpbin.org/ip'))['origin']
     peer_data = PeerData(ip_address, peer_dict[self.peer_id].store_revisions)
     peer_dict[self.peer_id] = peer_data
+    
+    # Enact the change.
     metadata = Metadata(self.peer_id, peer_dict, self.store_id, self.store_dict)
     self.update_metadata(metadata)
     
@@ -467,6 +470,15 @@ class Peer:
     # Enact the changes
     peer_data = PeerData(self.peer_dict[peer_id].ip_address, peer_store_revisions)
     self.record_peer_data(peer_id, peer_data)
+    
+  def update_store_revision(self, store_id, revision_data):
+    # Create a copy of the pertinent data in which to stage our changes.
+    store_dict = copy.deepcopy(self.store_dict)
+    store_dict[store_id].revision_data = revision_data
+    
+    # Enact the change
+    metadata = Metadata(self.peer_id, self.peer_dict, self.store_id, store_dict)
+    self.update_metadata(metadata)
     
     
   ##################################
@@ -498,11 +510,11 @@ class Peer:
     is later than `revision_data_2` or that revision fails signature verification.
     """
     # `revision_data_1` is `None` or its signature doesn't verify.
-    if (not revision_data_1) or (not self.verify_rev_number(store_id, revision_data_1)):
+    if (not revision_data_1) or (not self.verify_revision_data(store_id, revision_data_1)):
       return False
     
     # `revision_data_2` is `None` or its signature doesn't verify.
-    if (not revision_data_2) or (not self.verify_rev_number(store_id, revision_data_2)):
+    if (not revision_data_2) or (not self.verify_revision_data(store_id, revision_data_2)):
       return True
     
     # FIXME: Figure out proper way to extract revision numbers.
@@ -512,7 +524,7 @@ class Peer:
       return False
 
   
-  def verify_rev_number(self, store_id, revision_data):
+  def verify_revision_data(self, store_id, revision_data):
     """
     Verify the signature of a received revision number.
     """
@@ -546,10 +558,28 @@ class Peer:
     
   def verify_sync(self, peer_id, store_id):
     """
-    Check our store against the signed revision data that the sync sender passed 
-    us.
+    Check our newly syncronized store against the signed revision data that the 
+    sync sender passed us.
     """
+    revision_data = self.peer_dict[peer_id].store_revisions[store_id]
     
+    # The revision data's signature doesn't verify (we synced to a bad backup)
+    if not self.verify_revision_data(store_id, revision_data):
+      self.update_store_revision(store_id, None)
+      # FIXME: Raise a meaningful exception
+      raise Exception()
+    
+    calculated_hash = self.get_store_hash(store_id)
+    # FIXME: STUB. Not the actual access method for revision data
+    signed_hash = revision_data.hash
+    
+    # We successfully synced.
+    if calculated_hash == signed_hash:
+      self.update_store_revision(store_id, revision_data)
+    # The sync failed.
+    else:
+      self.update_store_revision(store_id, None)
+      
   #########################
   # Communication helpers #
   #########################
@@ -666,20 +696,18 @@ class Peer:
       # Get the next message.
       message_id, pickled_payload = self.receive(skt)
       
-    # Process the post-sync verification request
-    if message_id != message_ids['verify_sync_req']:
+    # Verify that the sync sender has signaled the end of the sync. 
+    if message_id != message_ids['sync_complete_msg']:
       self.handle_unexpected_message(message_id, pickled_payload)
       # FIXME: Use a meaningful exception
       raise Exception()
     
-    # Respond to the sync sender's verification request.
-    nonce = self.unpickle('verify_sync_req', pickled_payload)
-    verification_hash = self.get_store_hash(store_id, nonce)
-    self.send_verify_sync_resp(skt, verification_hash)
+    # Participate in the post-sync check.
+    self.sync_check(skt, peer_id, store_id)
     
-    # Locally verify the sync based on the signed revision data that we have recorded for the sync sender.
+    # Locally verify the sync based on the signed revision data that we have recorded 
+    #  for the sync sender and update our revision number accordingly.
     self.verify_sync(peer_id, store_id)
-    
     
     
   def sync_send(self, skt, peer_id, store_id):
@@ -703,26 +731,46 @@ class Peer:
     for relative_path in deleted_files:
       self.send_delete_file_msg(skt, relative_path)
       
-    # Generate a nonce for use in verification and send the request.
-    nonce = str(random.SystemRandom().random())
-    self.send_verify_sync_req(skt, nonce)
+    # Inform the peer that the sync is done
+    self.send_sync_complete_msg(skt)
     
-    # Generate a nonced verification_hash of the store to check against.
-    own_hash = self.get_store_hash(store_id, nonce)
+    # Check that the sync receiver's store is correctly up to date with ours and record the new revision data accordingly.
+    self.sync_check(skt, peer_id, store_id)
+      
+
+  def sync_check(self, skt, peer_id, store_id):
+    """Verify the other peer's store data."""
+    # Generate a nonce for verifying the peer's store.
+    own_nonce = str(random.SystemRandom().random())
+    self.send_verify_sync_req(skt, own_nonce)
     
-    # Receive the sync receiver's verification response.
-    peer_hash = self.receive_expected_message(skt, 'verify_sync_resp')
+    # The peer should simultaneously send a verification request of their own, so receive it
+    pickled_payload = self.receive_expected_message(skt, 'verify_sync_req')
+    peer_nonce = self.unpickle('verify_sync_req', pickled_payload)
+    
+    # Calculate the nonced hash as requested and respond to the peer.
+    own_verification_hash = self.get_store_hash(store_id, peer_nonce)
+    self.send_verify_sync_resp(skt, own_verification_hash)
+    
+    # Now generate our own nonced hash of the store to check the peer's response against.
+    own_hash = self.get_store_hash(store_id, own_nonce)
+     
+    # Receive the peer's verification response.
+    pickled_payload = self.receive_expected_message(skt, 'verify_sync_resp')
+    peer_verification_hash = self.unpickle('verify_sync_resp', pickled_payload)
     
     # If the hashes match, the peer has verified their store contents match ours, 
     #  so update our recording of their revision for the store.
-    if peer_hash == own_hash:
+    if peer_verification_hash == own_hash:
       self.update_peer_revision(peer_id, store_id)
     # Otherwise, the sync failed so record their revision as `None`
     else:
       self.update_peer_revision(peer_id, store_id, failed=True)
-      
-
-
+    
+    
+    
+    
+    
   ############################
   # Message dispatch methods #
   ############################
@@ -756,6 +804,11 @@ class Peer:
   def send_delete_file_msg(self, skt, relative_path):
     message_id = self.message_ids['delete_file_msg']
     message_data = relative_path
+    self.send(skt, message_id, message_data)
+    
+  def send_sync_complete_msg(self, skt):
+    message_id = self.message_ids['sync_complete_msg']
+    message_data = None
     self.send(skt, message_id, message_data)
     
   def send_verify_sync_req(self, skt, nonce):
@@ -880,7 +933,10 @@ class Peer:
     
     return relative_path
 
-   
+  def unpickle_sync_complete_msg(self, pickled_payload):
+    self.debug_print( (1, 'Unpickled a (empty) \'sync_complete_msg\' message.') )
+    return
+  
   def unpickle_verify_sync_req(self, pickled_payload):
     nonce = cPickle.loads(pickled_payload)
     self.debug_print( [(1, 'Unpickled a \'verify_sync_req\' message.'),
@@ -1090,24 +1146,26 @@ def test_handshake():
   t1.join()
 
 
-message_ids = {'handshake_req'    : 0,
-               'sync_req'         : 1,
-               'merkel_tree_msg'  : 2, 
-               'update_file_msg'  : 3,
-               'delete_file_msg'  : 4,
-               'verify_sync_req'  : 5,
-               'verify_sync_resp' : 6,
-               'disconnect_req'   : 7
+message_ids = {'handshake_req'     : 0,
+               'sync_req'          : 1,
+               'merkel_tree_msg'   : 2, 
+               'update_file_msg'   : 3,
+               'delete_file_msg'   : 4,
+               'sync_complete_msg' : 5,
+               'verify_sync_req'   : 6,
+               'verify_sync_resp'  : 7,
+               'disconnect_req'    : 8
                }
 
-unpicklers = {'handshake_req'    : Peer.unpickle_handshake_req,
-              'sync_req'         : Peer.unpickle_sync_req,
-              'merkel_tree_msg'  : Peer.unpickle_merkel_tree_msg,
-              'update_file_msg'  : Peer.unpickle_update_file_msg,
-              'delete_file_req'  : Peer.unpickle_delete_file_msg,
-              'verify_sync_req'  : Peer.unpickle_verify_sync_req, 
-              'verify_sync_resp' : Peer.unpickle_verify_sync_resp,
-              'disconnect_req'   : Peer.unpickle_delete_file_msg
+unpicklers = {'handshake_req'     : Peer.unpickle_handshake_req,
+              'sync_req'          : Peer.unpickle_sync_req,
+              'merkel_tree_msg'   : Peer.unpickle_merkel_tree_msg,
+              'update_file_msg'   : Peer.unpickle_update_file_msg,
+              'delete_file_req'   : Peer.unpickle_delete_file_msg,
+              'sync_complete_msg' : Peer.unpickle_sync_complete_msg,
+              'verify_sync_req'   : Peer.unpickle_verify_sync_req, 
+              'verify_sync_resp'  : Peer.unpickle_verify_sync_resp,
+              'disconnect_req'    : Peer.unpickle_delete_file_msg
               }
   
 
