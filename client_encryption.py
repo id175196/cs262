@@ -14,22 +14,31 @@ class ClientEncryption:
   ### functions to get foreign file paths
   
   # take a UUID and return the location for the private key file
-  def private_foreign_key_loc(self, uuid):
+  def private_foreign_key_loc(self, uuid):'
+  """Get a foreign private key location given a UUID.
+     Generally used only for testing purposes."""
       return os.path.join(self.directory, uuid, self.backup_path, "private_key.ppk")
   # take a UUID and return the location for the public key file
   def public_foreign_key_loc(self, uuid):
+  """Get a foreign key location given a UUID"""
       return os.path.join(self.directory, uuid, self.backup_path, "public_key.PEM")
   # take a UUID and return the location for the personal encrypter file
   def personal_foreign_encrypter_loc(self, uuid):
+  """Get a foreign encrypter file location given a UUID.
+     Generally used only for testing."""
       return os.path.join(self.directory, uuid, self.backup_path, "personal_encrypter.txt")
   # take a UUID and return the location for the revision number file
   def foreign_rev_no_loc(self, uuid):
+  """Get a personal foreign revision number file location given a UUID.
+     Generally used only for testing."""
       return os.path.join(self.directory, uuid, self.backup_path, "rev_no.txt")
   # take a UUID and return the location of their files.
   def foreign_files_loc(self,uuid):
+  """Get the file location for a peer's files given a UUID."""
       return os.path.join(self.directory, uuid, self.files_path)
   # take a UUID and return the bookkeeping location of files
   def foreign_backup_loc(self,uuid):
+  """Get the file location for a foriegn user's backup files given a UUID."""
       return os.path.join(self.directory, uuid, self.backup_path)
 
 
@@ -38,14 +47,17 @@ class ClientEncryption:
     
   # create merkle tree and store
   def make_personal_mt(self):
+  """Make a Merkle tree for the self's directory and store data."""
       mtree = mt.MarkleTree(self.files_loc)
       mt_pickling.pickle_data(mtree,self.mt_loc)
       return
   # get personal merkle tree
   def get_personal_mt(self):
+  """Get the stored personal Merkle Tree"""
       mt_pickling.unpickle_data(self.mt_loc)
   # produce Merkle tree for personal files
-  def produce_personal_mt(self,uuid, salt=''):
+  def produce_personal_mt(self,salt=''):
+  """Produce a personal Merkle tree, include salt if wanted."""
       return mt.MarkleTree(self.files_loc,salt)
 
   ## foreign merkle tree functions
