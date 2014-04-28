@@ -46,7 +46,7 @@ class ClientEncryption:
       mt_pickling.unpickle_data(self.mt_loc)
   # produce Merkle tree for personal files
   def produce_foreign_mt(self,uuid, salt=''):
-      return mtree = mt.MarkleTree(self.files_loc)
+      return mt.MarkleTree(self.files_loc)
   # take a UUID and return the merkle tree for all of their files
   def get_foreign_mt(self,uuid, salt=''):
       return mt.MarkleTree(self.foreign_files_loc(uuid), salt='')
