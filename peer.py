@@ -23,6 +23,9 @@ PeerData = namedtuple('PeerData', 'ip_address, store_revisions')
 StoreData = namedtuple('StoreData', 'revision_data, peers')
 Metadata = namedtuple('Metadata', 'peer_id, peer_dict, store_id, store_dict')
 
+# A necessary constant for unpacking messages
+header_size = struct.calcsize('!I')
+
 class Peer:
   
   #########################
@@ -34,10 +37,12 @@ class Peer:
   def __init__(self,
                directory=os.getcwd(),
                debug_verbosity=0,
-               debug_prefix=None):
+               debug_prefix=None,
+               _metadata=None):
     """Initialize a `Peer` object."""
     self.debug_verbosity = debug_verbosity
     self.debug_preamble = debug_prefix
+    self._metadata = _metadata
     
     # Get the encryption object
     self.encryption = client_encryption.ClientEncryption(directory) # FIXME: On first run_peer_server, need `ClientEncryption` to initialize directory structure and sign revision 0.
@@ -92,6 +97,8 @@ class Peer:
     # Figure out what type of sync we'll be conducting.
     sync_type = self.determine_sync_type(client_peer_id, sync_store_id)
     
+    # Sync
+    self.do_sync(skt_ssl, sync_type, client_peer_id, sync_store_id)
     
 
     # Session over, send the peer client a disconnect request.
@@ -113,17 +120,22 @@ class Peer:
     self.learn_metadata_gossip(server_peer_dict)
 
     # Select a store to sync with the peer server.
-    store_id = self.select_sync_store(server_peer_id)
+    sync_store_id = self.select_sync_store(server_peer_id)
     
     # Quit the session if we couldn't find a store to sync.
-    if not store_id:
-      self.send_disconnect_req(skt_ssl, 'No stores to sync.')
+    if not sync_store_id:
+      self.send_disconnect_req(skt_ssl, 'No stores to sync or check.')
       # FIXME: Raise a meaningful exception.
       raise Exception()
     
     # Initiate a sync.
-    self.send_sync_req(skt_ssl, store_id)
+    self.send_sync_req(skt_ssl, sync_store_id)
     
+    # Figure out what type of sync we'll be conducting.
+    sync_type = self.determine_sync_type(server_peer_id, sync_store_id)
+    
+    # Sync
+    self.do_sync(skt_ssl, sync_type, server_peer_id, sync_store_id)
     
     # Session over, get the peer server's disconnect request
     pickled_payload = self.receive_expected_message(skt_ssl, 'disconnect_req')
@@ -132,34 +144,21 @@ class Peer:
                        (1, disconnect_message)] )
 
   
-  def do_sync(self, sync_type, store_id):
+  def do_sync(self, skt, sync_type, peer_id, store_id):
     if sync_type == 'receive':
-      self.sync_receive(store_id)
+      self.sync_receive(skt, peer_id, store_id)
+    elif sync_type == 'send':
+      self.sync_send(skt, peer_id, store_id)
+    elif sync_type == 'check':
+      # FIXME: Skip ahead to salted verification.
+      None
+    else:
+      # FIXME: Raise a meaningful exception
+      raise Exception()
       
   ####################
   # Class attributes #
   ####################
-  
-  message_ids = {'handshake_req'    : 0,
-                 'sync_req'         : 1,
-                 'merkel_tree_msg'  : 2, 
-                 'update_file_req'  : 3, # FIXME
-                 'delete_file_req'  : 4, # FIXME
-                 'verify_sync_req'  : 5, # FIXME: Provide salt for Merkle tree, update peer's revision data upon verification 
-                 'verify_sync_resp' : 6, # FIXME
-                 'disconnect_req'   : 7 # FIXME
-                 }
-  
-  unpicklers = {'handshake_req'    : Peer.unpickle_handshake_req,
-                'sync_req'         : Peer.unpickle_sync_req,
-                'merkel_tree_msg'  : Peer.unpickle_merkel_tree_msg,
-                'update_file_req'  : 3, # FIXME
-                'delete_file_req'  : 4, # FIXME
-                'verify_sync_req'  : 5, # FIXME: Provide salt for Merkle tree, update peer's revision data upon verification 
-                'verify_sync_resp' : 6, # FIXME
-                'disconnect_req'   : 7 # FIXME
-                }
-  
   
   # FIXME: Beware the unsafety if accessing mutable fields from multiple threads.
   listening_port = 51337 # TODO: Magic number. Ideally would want listening listening_port number to be configurable per peer.
@@ -169,33 +168,6 @@ class Peer:
   # Initialization methods #
   ##########################
   
-  def generate_peer_id(self):
-    """
-    Generate a quasi-unique ID for this peer using a hash (SHA-256, which
-    currently has no known collisions) of the owner's public key "salted" with a
-    random number.
-    """
-    peer_unique_string = self.encryption.import_public_key().exportKey() + str(random.SystemRandom().random())
-    peer_id = hashlib.sha256(peer_unique_string).digest()
-    self.debug_print( (2, 'Generated new peer ID: ' + peer_id) )
-    return peer_id
-    
-
-  def generate_store_id(self, public_key=None):
-    """
-    Store IDs are meant to uniquely identify a store/user. They are essentially
-    the RSA public key, but we use use their SHA-256 hash to "flatten" them to
-    a shorter, predictable length.
-    """
-    # Default to using own public key.
-    if not public_key:
-      public_key = self.encryption.import_public_key()
-      
-    store_id = hashlib.sha256(public_key.exportKey()).digest()
-    self.debug_print( (2, 'Generated new store ID: ' + store_id) )
-    return store_id
-
-
   # TODO: De-uglify
   # FIXME: PyDoc
   # Use a file to permanently store certain metadata.
@@ -226,8 +198,7 @@ class Peer:
         with open(self.metadata_file, 'w') as f:
           cPickle.dump(metadata, f)
     finally:  
-      # Bring the new values into effect
-      self._metadata = Metadata(None, None, None, None) # Create a null object to update against.
+      # Bring the new values into effect.
       self.update_metadata(metadata)
 
 
@@ -249,6 +220,33 @@ class Peer:
     return metadata
     
   
+  def generate_peer_id(self):
+    """
+    Generate a quasi-unique ID for this peer using a hash (SHA-256, which
+    currently has no known collisions) of the owner's public key "salted" with a
+    random number.
+    """
+    peer_unique_string = self.encryption.import_public_key().exportKey() + str(random.SystemRandom().random())
+    peer_id = hashlib.sha256(peer_unique_string).digest()
+    self.debug_print( (2, 'Generated new peer ID: ' + peer_id) )
+    return peer_id
+    
+
+  def generate_store_id(self, public_key=None):
+    """
+    Store IDs are meant to uniquely identify a store/user. They are essentially
+    the RSA public key, but we use use their SHA-256 hash to "flatten" them to
+    a shorter, predictable length.
+    """
+    # Default to using own public key.
+    if not public_key:
+      public_key = self.encryption.import_public_key()
+      
+    store_id = hashlib.sha256(public_key.exportKey()).digest()
+    self.debug_print( (2, 'Generated new store ID: ' + store_id) )
+    return store_id
+
+
   ####################
   # Metadata methods #
   ####################
@@ -289,6 +287,7 @@ class Peer:
     that all changes are backed up to primary storage.
     """
     return self._metadata
+  
   
   def update_metadata(self, metadata):
     """
@@ -408,6 +407,7 @@ class Peer:
     metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict)
     self.update_metadata(metadata)
   
+  
   def learn_metadata_gossip(self, peer_dict):
     """
     Update this peer's metadata based on gossip received from another peer.
@@ -435,6 +435,7 @@ class Peer:
       if set(peer_dict[peer_id].store_revisions.keys()).intersection(set(self.peer_dict.keys())):
         self.record_peer_data(peer_id, peer_dict[peer_id])
     
+    
   def update_ip_address(self):
     """Update this peer's already existing IP address data."""
     # Create staging copy of data to be changed
@@ -445,6 +446,27 @@ class Peer:
     peer_dict[self.peer_id] = peer_data
     metadata = Metadata(self.peer_id, peer_dict, self.store_id, self.store_dict)
     self.update_metadata(metadata)
+    
+    
+  def update_peer_revision(self, peer_id, store_id, failed=False):
+    """
+    After sending a peer synchronization data and verifying their store contents, 
+    update our recording of their revision for the store in question to match 
+    ours.
+    """
+    # Create a copy of the pertinent data in which to stage our changes.
+    peer_store_revisions = copy.deepcopy(self.peer_dict[peer_id].store_revisions)
+    
+    if not failed:
+      # Set the peer's revision for the store to match our revision for it.
+      peer_store_revisions[store_id] = self.store_dict[store_id].revision_data
+    else:
+      # Record the peer's revision for the store as `None`
+      peer_store_revisions[store_id] = None
+    
+    # Enact the changes
+    peer_data = PeerData(self.peer_dict[peer_id].ip_address, peer_store_revisions)
+    self.record_peer_data(peer_id, peer_data)
     
     
   ##################################
@@ -517,6 +539,16 @@ class Peer:
     
     updated_files, deleted_files = mt.mt_file_diffs(mt_new, mt_old)
     return updated_files, deleted_files
+    
+  def get_store_hash(self, store_id, nonce=''):
+    # FIXME: STUB. Still no way of salting the "personal tree"
+    None
+    
+  def verify_sync(self, peer_id, store_id):
+    """
+    Check our store against the signed revision data that the sync sender passed 
+    us.
+    """
     
   #########################
   # Communication helpers #
@@ -598,24 +630,102 @@ class Peer:
     
     # Otherwise, we both have the same (valid) revision.
     return 'check'
-  
-  
-  def sync_receive(self, skt, store_id):
+
+
+  def sync_receive(self, skt, peer_id, store_id):
     """Conduct a sync as the receiving party."""
-    # Submit our Merkel tree for the store so the communicating peer can identify which files require modification.
-    self.send_merkel_tree_msg(skt, store_id)
+    # Submit our Merkel tree for the store so the sync sender can identify which files require modification.
+    self.send_merkel_tree_msg(skt, store_id)   
     
-  def sync_send(self, skt, store_id):
+    # Get and process all commands to update/create and delete files before proceeding to verification.
+    message_id, pickled_payload = self.receive(skt)
+    while (message_id == message_ids['update_file_msg']) or (message_id == message_ids['delete_file_msg']):
+      # Update/create a file.
+      if (message_id == message_ids['update_file_msg']):
+        relative_path, file_contents = self.unpickle('update_file_msg', pickled_payload)
+        full_path = os.path.join(self.encryption.foreign_files_loc(store_id),relative_path)
+        
+        # Write the file's new contents creating new directories as needed.
+        # FIXME: As currently implemented, an IO error here would cause an end to the sync and an inconsistent store.
+        if not os.path.exists(os.path.dirname(full_path)):
+          os.makedirs(os.path.dirname(full_path))
+        with file.open(full_path,'w') as f:
+          f.write(file_contents)
+      
+      # Delete a file or directory.
+      elif (message_id == message_ids['delete_file_msg']):
+        relative_path = self.unpickle('update_file_msg', pickled_payload)
+        full_path = os.path.join(self.encryption.foreign_files_loc(store_id),relative_path)
+        
+        # FIXME: Again, an IO error here would cause an end to the sync and an inconsistent store.
+        if os.path.isfile(full_path):
+          os.remove(full_path)
+        elif os.path.isdir(full_path):
+          shutil.rmtree(full_path)
+          
+      # Get the next message.
+      message_id, pickled_payload = self.receive(skt)
+      
+    # Process the post-sync verification request
+    if message_id != message_ids['verify_sync_req']:
+      self.handle_unexpected_message(message_id, pickled_payload)
+      # FIXME: Use a meaningful exception
+      raise Exception()
+    
+    # Respond to the sync sender's verification request.
+    nonce = self.unpickle('verify_sync_req', pickled_payload)
+    verification_hash = self.get_store_hash(store_id, nonce)
+    self.send_verify_sync_resp(skt, verification_hash)
+    
+    # Locally verify the sync based on the signed revision data that we have recorded for the sync sender.
+    self.verify_sync(peer_id, store_id)
+    
+    
+    
+  def sync_send(self, skt, peer_id, store_id):
     """Conduct a sync as the sending party."""
-    # Receive the communicating peer's Merkel tree for the store.
+    # Receive the sync receiver's Merkel tree for the store.
     pickled_payload = self.receive_expected_message(skt, 'merkel_tree_msg')
     merkel_tree = self.unpickle('merkel_tree_msg', pickled_payload)
     
     updated_files, deleted_files = self.diff_store_to_merkel_tree(store_id, merkel_tree)
     
-  #####################
-  # Messaging methods #
-  #####################
+    # Send the sync receiver each file that has changed
+    for relative_path in updated_files:
+      # Read in the file's contents
+      with file.open(os.path.join(self.encryption.foreign_files_loc(store_id),relative_path),'r') as f:
+        file_contents = f.read()
+      
+      # Send the file updates to the communicating peer.
+      self.send_update_file_msg(skt, relative_path, file_contents)
+      
+    # Inform the sync receiver of each file that has been deleted
+    for relative_path in deleted_files:
+      self.send_delete_file_msg(skt, relative_path)
+      
+    # Generate a nonce for use in verification and send the request.
+    nonce = str(random.SystemRandom().random())
+    self.send_verify_sync_req(skt, nonce)
+    
+    # Generate a nonced verification_hash of the store to check against.
+    own_hash = self.get_store_hash(store_id, nonce)
+    
+    # Receive the sync receiver's verification response.
+    peer_hash = self.receive_expected_message(skt, 'verify_sync_resp')
+    
+    # If the hashes match, the peer has verified their store contents match ours, 
+    #  so update our recording of their revision for the store.
+    if peer_hash == own_hash:
+      self.update_peer_revision(peer_id, store_id)
+    # Otherwise, the sync failed so record their revision as `None`
+    else:
+      self.update_peer_revision(peer_id, store_id, failed=True)
+      
+
+
+  ############################
+  # Message dispatch methods #
+  ############################
   
   def send(self, skt, message_id, message_data):
     pickled_payload = cPickle.dumps(message_data)
@@ -637,34 +747,65 @@ class Peer:
     message_id = self.message_ids['merkel_tree_msg']
     message_data = self.get_merkel_tree(store_id)
     self.send(skt, message_id, message_data)
+    
+  def send_update_file_msg(self, skt, relative_path, file_contents):
+    message_id = self.message_ids['update_file_msg']
+    message_data = (relative_path, file_contents)
+    self.send(skt, message_id, message_data)
+    
+  def send_delete_file_msg(self, skt, relative_path):
+    message_id = self.message_ids['delete_file_msg']
+    message_data = relative_path
+    self.send(skt, message_id, message_data)
+    
+  def send_verify_sync_req(self, skt, nonce):
+    message_id = self.message_ids['verify_sync_req']
+    message_data = nonce
+    self.send(skt, message_id, message_data)
+        
+  def send_verify_sync_resp(self, skt, verification_hash):
+    message_id = self.message_ids['verify_sync_resp']
+    message_data = verification_hash
+    self.send(skt, message_id, message_data)
         
   def send_disconnect_req(self, skt, disconnect_message):
     message_id = self.message_ids['disconnect_req']
     message_data = disconnect_message
     self.send(skt, message_id, message_data)    
 
-     
+
+  ###########################
+  # Message receipt methods #
+  ###########################
+  
   def receive(self, skt):
-    message_buffer = skt.recv(4096)
-    length_received = len(message_buffer)
+    """
+    Low-level receipt of messages. Attempts to retrieve exact message lengths to 
+    support consecutively submitted messsages.
+    """ 
+    # First retrieve the message header
+    message_buffer = str()
+    length_received = 0
+    while length_received < header_size:
+      message_buffer += skt.recv(header_size - length_received)
+      length_received = len(message_buffer)
     
-    if length_received >= 4:
-      length = struct.unpack('!I',message_buffer[0:4])[0]
-      
-      # Get the rest of the message if incomplete
-      # FIXME: This helps, but doesn't guarantee a complete message
-      if length_received < (length + 4):
-        message_buffer += skt.recv((length + 4) - length_received)
-      
-      # Message has incorrect length.
-      if len(message_buffer) != (length + 4):
-        # FIXME: Provide a meaningful exception.
-        raise Exception()
-      
-      # Unpickle the message contents
-      pickled_message = message_buffer[4:4+length]
-      (message_id, pickled_payload) = cPickle.loads(pickled_message)
-      return message_id, pickled_payload
+    # Unpack the header
+    length = struct.unpack('!I',message_buffer[0:header_size])[0]
+    
+    # Retrieve the message body.
+    while length_received < (length + header_size):
+      message_buffer += skt.recv((length + header_size) - length_received)
+    
+    # Message has incorrect length.
+    if len(message_buffer) != (length + header_size):
+      # FIXME: Provide a meaningful exception.
+      raise Exception()
+    
+    # Unpickle the message contents
+    pickled_message = message_buffer[header_size:header_size+length]
+    (message_id, pickled_payload) = cPickle.loads(pickled_message)
+    return message_id, pickled_payload
   
   
   def receive_expected_message(self, skt, expected_message_type):
@@ -694,8 +835,8 @@ class Peer:
 
   def unpickle(self, message_type, pickled_payload):
     return self.unpicklers[message_type](self, pickled_payload)
-  
-      
+
+
   def unpickle_handshake_req(self, pickled_payload):
     (peer_id, peer_dict) = cPickle.loads(pickled_payload)
     self.debug_print( [(1, 'Unpickled a \'handshake_req\' message.'),
@@ -722,8 +863,39 @@ class Peer:
       merkel_tree.PrintHashList() # If this doesn't work due to unpickling, could also try `MarkleTree.PrintHashList(merkel_tree)`
     
     return merkel_tree
+  
+  def unpickle_update_file_msg(self, pickled_payload):
+    relative_path, file_contents = cPickle.loads(pickled_payload)
+    self.debug_print( [(1, 'Unpickled a \'update_file_msg\' message.'),
+                       (2, 'relative_path = '+relative_path),
+                       (4, 'file_contents:'),
+                       (4, file_contents)] )
+    
+    return relative_path, file_contents
+   
+  def unpickle_delete_file_msg(self, pickled_payload):
+    relative_path = cPickle.loads(pickled_payload)
+    self.debug_print( [(1, 'Unpickled a \'delete_file_msg\' message.'),
+                       (2, 'relative_path = '+relative_path)] )
+    
+    return relative_path
+
+   
+  def unpickle_verify_sync_req(self, pickled_payload):
+    nonce = cPickle.loads(pickled_payload)
+    self.debug_print( [(1, 'Unpickled a \'verify_sync_req\' message.'),
+                       (2, 'nonce = '+nonce)] )
+    
+    return nonce
 
 
+  def unpickle_verify_sync_resp(self, pickled_payload):
+    verification_hash = cPickle.loads(pickled_payload)
+    self.debug_print( [(1, 'Unpickled a \'verify_sync_resp\' message.'),
+                       (2, 'verification_hash = '+verification_hash)] )
+    
+    return verification_hash
+  
   #################################
   # Debug and development methods #
   #################################
@@ -907,8 +1079,8 @@ def test_ssl():
 def test_handshake():
   print 'Executing peer handshake test.'
   import threading
-  client = Peer(debug_verbosity=1, debug_prefix='Peer Client:')
-  server = Peer(debug_verbosity=1, debug_prefix='Peer Server:')
+  client = Peer(debug_verbosity=5, debug_prefix='Peer Client:')
+  server = Peer(debug_verbosity=5, debug_prefix='Peer Server:')
   
   t1 = threading.Thread(target=server.test_server_handshake, args=())
   t2 = threading.Thread(target=client.test_client_handshake, args=('localhost',))
@@ -918,6 +1090,26 @@ def test_handshake():
   t1.join()
 
 
+message_ids = {'handshake_req'    : 0,
+               'sync_req'         : 1,
+               'merkel_tree_msg'  : 2, 
+               'update_file_msg'  : 3,
+               'delete_file_msg'  : 4,
+               'verify_sync_req'  : 5,
+               'verify_sync_resp' : 6,
+               'disconnect_req'   : 7
+               }
+
+unpicklers = {'handshake_req'    : Peer.unpickle_handshake_req,
+              'sync_req'         : Peer.unpickle_sync_req,
+              'merkel_tree_msg'  : Peer.unpickle_merkel_tree_msg,
+              'update_file_msg'  : Peer.unpickle_update_file_msg,
+              'delete_file_req'  : Peer.unpickle_delete_file_msg,
+              'verify_sync_req'  : Peer.unpickle_verify_sync_req, 
+              'verify_sync_resp' : Peer.unpickle_verify_sync_resp,
+              'disconnect_req'   : Peer.unpickle_delete_file_msg
+              }
+  
 
 def main():
   test_handshake()
