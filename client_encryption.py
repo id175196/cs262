@@ -47,12 +47,14 @@ class ClientEncryption:
   # produce Merkle tree for personal files
   def produce_personal_mt(self,uuid, salt=''):
       return mt.MarkleTree(self.files_loc,salt)
+
+  ## foreign merkle tree functions
   # take a UUID and return the merkle tree for all of their files
   def get_foreign_mt(self,uuid, salt=''):
       return mt.MarkleTree(self.foreign_files_loc(uuid), salt='')
   
 
-  ### revision number function
+  ### revision number functions
 
   # get the revision number
   def get_rev_number(self):
@@ -65,16 +67,18 @@ class ClientEncryption:
     f.close()
     return
 
+  ##foreign revision number functions
   # take a uuid and return the tuple message (revision number, tophash, and signature)
   def get_foreign_rev_no(self,uuid):
       return mt_pickling.unpickle_data(self.foreign_rev_no_loc())
-
   # take a uuid and tuple message (revision number, tophash, and signature) and store
   def store_foreign_rev_no(self,uuid,tup):
       return mt_pickling.pickle_data(tup,self.foreign_rev_no_loc())
 
-    
 
+  ### generating personal files functions
+    
+  # function that produces a personal and private key for the user
   def generate_public_keypair(self):
     random_generator = Random.new().read
     key = RSA.generate(1024, random_generator)
@@ -91,6 +95,21 @@ class ClientEncryption:
                           ' -out ' + self.x509_cert_loc,
                           shell=True)
 
+  # generate a new personal encrypter file
+  def generate_encrypter(self):
+    f_personal = open(self.personal_encrypter_loc, 'w')
+    f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
+    f_personal.write(Random.get_random_bytes(8))
+    f_personal.close()
+    return
+
+  # generate a new revision number file
+  def generate_rev_no(self):
+    f_rev = open(self.rev_no_loc, 'w')  
+    f_rev.write('1')
+    f_rev.close()
+    return
+
   # initialized pubic and private key of personal computer
   def __init__(self, directory=os.getcwd()):
     
@@ -105,7 +124,8 @@ class ClientEncryption:
       self.mt_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "mtree.mt")
       self.files_loc = os.path.join(self.directory, self.personal_path, self.files_path)
       self.backup_files_loc = os.path.join(self.directory, self.personal_path, self.backup_path)
-      
+
+      #check to make sure file directories exist
       if(os.path.isdir(self.directory) != True):
           os.makedirs(self.directory)
       if(os.path.isdir(os.path.join(self.directory, self.personal_path)) != True):
@@ -119,17 +139,14 @@ class ClientEncryption:
       if not (os.path.isfile(self.private_key_loc) and os.path.isfile(self.public_key_loc)):
         self.generate_public_keypair()
         self.generate_x509_cert()
-      
-      f_personal = open(self.personal_encrypter_loc, 'w')
-      f_rev = open(self.rev_no_loc, 'w')
-      
-      f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
-      f_personal.write(Random.get_random_bytes(8))
-      f_rev.write('1')
 
-      f_personal.close()
-      f_rev.close();
+      # generate personal encrypter file if it doesn't exist
+      if not os.path.isfile(self.personal_encrypter_loc):
+        self.generate_encrypter()
 
+      # generate revision number if doesn't exist
+      if not os.path.isfile(self.rev_no_loc):
+        self.generate_rev_no()
       
       return
     
