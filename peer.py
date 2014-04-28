@@ -1,6 +1,7 @@
 """
 The peer class is really a lot bigger than I was expecting.
 """
+
 import socket
 import ssl
 import client_encryption
@@ -16,6 +17,8 @@ import copy
 from urllib2 import urlopen
 from collections import namedtuple
 import mt # Here because we unpickle Merkel trees. I'm still not certain this import is actually necessary...
+import threading
+
 
 # Named tuples have (immutable) class-like semantics for accessing fields, but are straightforward to pickle/unpickle.
 # The following types are for important data whose contents and format should be relatively stable at this point.
@@ -25,6 +28,7 @@ Metadata = namedtuple('Metadata', 'peer_id, peer_dict, store_id, store_dict')
 
 # A necessary constant for unpacking messages
 header_size = struct.calcsize('!I')
+
 
 class Peer:
   
@@ -38,11 +42,13 @@ class Peer:
                directory=os.getcwd(),
                debug_verbosity=0,
                debug_prefix=None,
-               _metadata=None):
+               _metadata=None,
+               lock=threading.Lock() ):
     """Initialize a `Peer` object."""
     self.debug_verbosity = debug_verbosity
     self.debug_preamble = debug_prefix
     self._metadata = _metadata
+    self.lock = lock
     
     # Get the encryption object
     self.encryption = client_encryption.ClientEncryption(directory) # FIXME: On first run_peer_server, need `ClientEncryption` to initialize directory structure and sign revision 0.
@@ -246,9 +252,9 @@ class Peer:
     return store_id
 
 
-  ####################
-  # Metadata methods #
-  ####################
+  ######################
+  # Metadata accessors #
+  ######################
   
   @property
   def peer_id(self):
@@ -286,9 +292,16 @@ class Peer:
     that all changes are backed up to primary storage.
     """
     return self._metadata
+
+
+  #####################
+  # Metadata mutators #
+  #####################
   
-  
-  def update_metadata(self, metadata):
+  # Trying out weaving a lock through these calls (akin to priority inversion)
+  #  so only one thread can access the metadata at a time. Hope it works.
+
+  def update_metadata(self, metadata, lock=False):
     """
     All updates to a peer's stored metadata occur through this function so
     we can ensure that changes are backed up to primary storage before coming 
@@ -298,6 +311,11 @@ class Peer:
     if metadata == self.metadata:
       self.debug_print( (2, 'No new metadata; update skipped.') )
       return
+    
+    # Make sure we have the lock before proceeding
+    if not lock:
+      self.lock.acquire()
+      lock = True
     
     # Copy the previous metadata file to the backup location.
     shutil.copyfile(self.metadata_file, self.backup_metadata_file)
@@ -354,10 +372,15 @@ class Peer:
 #     self.update_metadata(metadata)
 
 
-  def record_peer_data(self, peer_id, peer_data):
+  def record_peer_data(self, peer_id, peer_data, lock=False):
     """
     Update the recorded metadata for an individual peer.
     """
+    # Make sure we have the lock before proceeding
+    if not lock:
+      self.lock.acquire()
+      lock = True
+    
     peer_mutual_stores = set(peer_data.store_revisions.keys()).intersection(set(self.store_dict.keys()))
     # Only want to track peers that are associated with a store we're concerned with.
     if not peer_mutual_stores:
@@ -376,7 +399,8 @@ class Peer:
                          (0, 'peer_id = '+peer_id),
                          (0, 'peer_data:')
                          (0, peer_data)] )
-      return      
+      return
+    
     # Create copies data for staging changes.
     peer_dict = copy.deepcopy(self.peer_dict)
     store_dict = copy.deepcopy(self.store_dict)
@@ -404,13 +428,18 @@ class Peer:
     # Enact the update.
     peer_dict[peer_id] = PeerData(ip_address, store_revisions)
     metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict)
-    self.update_metadata(metadata)
+    self.update_metadata(metadata, lock)
   
   
-  def learn_metadata_gossip(self, peer_dict):
+  def learn_metadata_gossip(self, peer_dict, lock=False):
     """
     Update this peer's metadata based on gossip received from another peer.
     """
+    # Make sure we have the lock before proceeding
+    if not lock:
+      self.lock.acquire()
+      lock = True
+    
     # Update our metadata on mutual peers as needed.
     mutual_peers = set(peer_dict.keys()).intersection(set(self.peer_dict.keys()))
     for peer_id in mutual_peers:
@@ -426,17 +455,22 @@ class Peer:
       # Compare what the gossip says this peer knows against what we've recorded
       if (any(self.gt_revision_data(g_rev, r_rev) for g_rev, r_rev in zip(gossip_revisions, recorded_revisions))):
         # The gossip indicates more recent knowledge of the peer in question than we have
-        self.record_peer_data(peer_id, peer_dict[peer_id])
+        self.record_peer_data(peer_id, peer_dict[peer_id], lock)
     
     # Learn new peers associated with our stores of interest.
     unknown_peers = set(peer_dict.keys()).difference(set(self.peer_dict.keys()))
     for peer_id in unknown_peers:
       if set(peer_dict[peer_id].store_revisions.keys()).intersection(set(self.peer_dict.keys())):
-        self.record_peer_data(peer_id, peer_dict[peer_id])
+        self.record_peer_data(peer_id, peer_dict[peer_id], lock)
     
     
-  def update_ip_address(self):
+  def update_ip_address(self, lock=False):
     """Update this peer's already existing IP address data."""
+    # Make sure we have the lock before proceeding
+    if not lock:
+      self.lock.acquire()
+      lock = True
+    
     # Create staging copy of data to be changed
     peer_dict = copy.deepcopy(self.peer_dict)
     
@@ -448,15 +482,19 @@ class Peer:
     
     # Enact the change.
     metadata = Metadata(self.peer_id, peer_dict, self.store_id, self.store_dict)
-    self.update_metadata(metadata)
+    self.update_metadata(metadata, lock)
     
     
-  def update_peer_revision(self, peer_id, store_id, failed=False):
+  def update_peer_revision(self, peer_id, store_id, failed=False, lock=None):
     """
     After sending a peer synchronization data and verifying their store contents, 
     update our recording of their revision for the store in question to match 
     ours.
     """
+    # Make sure we have the lock before proceeding
+    if not lock:
+      lock = threading.Lock()
+    
     # Create a copy of the pertinent data in which to stage our changes.
     peer_store_revisions = copy.deepcopy(self.peer_dict[peer_id].store_revisions)
     
@@ -469,16 +507,21 @@ class Peer:
     
     # Enact the changes
     peer_data = PeerData(self.peer_dict[peer_id].ip_address, peer_store_revisions)
-    self.record_peer_data(peer_id, peer_data)
+    self.record_peer_data(peer_id, peer_data, lock)
+
     
-  def update_store_revision(self, store_id, revision_data):
-    # Create a copy of the pertinent data in which to stage our changes.
+  def update_store_revision(self, store_id, revision_data, lock=None):
+     # Make sure we have the lock before proceeding
+    if not lock:
+      lock = threading.Lock()
+    
+   # Create a copy of the pertinent data in which to stage our changes.
     store_dict = copy.deepcopy(self.store_dict)
     store_dict[store_id].revision_data = revision_data
     
     # Enact the change
     metadata = Metadata(self.peer_id, self.peer_dict, self.store_id, store_dict)
-    self.update_metadata(metadata)
+    self.update_metadata(metadata, lock)
     
     
   ##################################
@@ -1120,7 +1163,6 @@ class Peer:
 
 def test_ssl():
   print 'Executing peer connection test.'
-  import threading
   client = Peer(debug_verbosity=1, debug_prefix='Peer Client:')
   server = Peer(debug_verbosity=1, debug_prefix='Peer Server:')
   
@@ -1134,7 +1176,6 @@ def test_ssl():
 
 def test_handshake():
   print 'Executing peer handshake test.'
-  import threading
   client = Peer(debug_verbosity=5, debug_prefix='Peer Client:')
   server = Peer(debug_verbosity=5, debug_prefix='Peer Server:')
   
