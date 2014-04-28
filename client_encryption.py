@@ -11,7 +11,7 @@ class ClientEncryption:
   personal_path = 'personal'
   files_path = 'files'
 
-  ### functions to get certain file paths
+  ### functions to get foreign file paths
   
   # take a UUID and return the location for the private key file
   def private_foreign_key_loc(self, uuid):
@@ -32,9 +32,6 @@ class ClientEncryption:
   def foreign_backup_loc(self,uuid):
       return os.path.join(self.directory, uuid, self.backup_path)
 
-  # get personal files location
-  def get_personal_files_loc(self):
-      return os.path.join(self.directory, self.personal_path, self.backup_path)
 
 
   ### merkle tree functions
@@ -48,8 +45,8 @@ class ClientEncryption:
   def get_personal_mt(self):
       mt_pickling.unpickle_data(self.mt_loc)
   # produce Merkle tree for personal files
-  def produce_foreign_mt(self,uuid, salt=''):
-      return mt.MarkleTree(self.files_loc)
+  def produce_personal_mt(self,uuid, salt=''):
+      return mt.MarkleTree(self.files_loc,salt)
   # take a UUID and return the merkle tree for all of their files
   def get_foreign_mt(self,uuid, salt=''):
       return mt.MarkleTree(self.foreign_files_loc(uuid), salt='')
@@ -107,6 +104,7 @@ class ClientEncryption:
       self.rev_no_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "rev_no.txt")
       self.mt_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "mtree.mt")
       self.files_loc = os.path.join(self.directory, self.personal_path, self.files_path)
+      self.backup_files_loc = os.path.join(self.directory, self.personal_path, self.backup_path)
       
       if(os.path.isdir(self.directory) != True):
           os.makedirs(self.directory)
@@ -480,19 +478,31 @@ class ClientEncryption:
       f_rev.close()
       return
 
-  # initialize a peer, check to make sure their keys exists  
+  # initialize a peer, print all locations
   def init_peer_test(self):
-    peer_uuid = '100'
-    self.init_remote_test(peer_uuid)
-    print os.path.exists(self.private_foreign_key_loc(peer_uuid))
-    print os.path.exists(self.public_foreign_key_loc(peer_uuid))
-    print os.path.exists(self.private_foreign_key_loc(peer_uuid))
-    print self.private_foreign_key_loc(peer_uuid)
-
-  # init
+    uuid = '200'
+    self.init_remote_test(uuid)
+    print self.private_foreign_key_loc(uuid)
+    print self.public_foreign_key_loc(uuid)
+    print self.personal_foreign_encrypter_loc(uuid)
+    print self.foreign_rev_no_loc(uuid)
+    print self.foreign_files_loc(uuid)
+    print self.foreign_backup_loc(uuid)
     
+  #initialize self and print all locations
+  def init_test(self):
+    self.__init__()
+    print self.directory
+    print self.personal_path_full
+    print self.private_key_loc
+    print self.public_key_loc
+    print self.x509_cert_loc
+    print self.personal_encrypter_loc
+    print self.rev_no_loc
+    print self.mt_loc
+    print self.files_loc
     
-
 if __name__ == '__main__':
   ClientEncryption().complex_test()
   ClientEncryption().init_peer_test()
+  ClientEncryption().init_test()
