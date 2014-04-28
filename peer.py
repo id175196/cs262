@@ -19,12 +19,17 @@ from collections import namedtuple
 import mt # Here because we unpickle Merkel trees. I'm still not certain this import is actually necessary...
 import threading
 import time
+import Crypto.Signature
+import Crypto.Hash
+
 
 # Named tuples have (immutable) class-like semantics for accessing fields, but are straightforward to pickle/unpickle.
 # The following types are for important data whose contents and format should be relatively stable at this point.
 PeerData = namedtuple('PeerData', 'ip_address, store_revisions')
 StoreData = namedtuple('StoreData', 'revision_data, peers')
+RevisionData = namedtuple('RevisionData', 'revision_number, store_hash, signature')
 Metadata = namedtuple('Metadata', 'peer_id, peer_dict, store_id, store_dict')
+
 
 # A necessary constant for unpacking messages
 header_size = struct.calcsize('!I')
@@ -43,7 +48,8 @@ class Peer:
                debug_verbosity=0,
                debug_prefix=None,
                _metadata=None,
-               lock=threading.Lock() ):
+               lock=threading.Lock(),
+               merkel_tree=None ):
     """Initialize a `Peer` object."""
     self.debug_verbosity = debug_verbosity
     self.debug_preamble = debug_prefix
@@ -51,7 +57,8 @@ class Peer:
     self.lock = lock
     
     # Get the encryption object
-    self.encryption = client_encryption.ClientEncryption(directory) # FIXME: On first run_peer_server, need `ClientEncryption` to initialize directory structure and sign revision 0.
+    # FIXME: On first run_peer_server, need `ClientEncryption` to initialize directory structure and sign revision 0.
+    self.encryption = client_encryption.ClientEncryption(directory)
     
     self.private_key_file = self.encryption.private_key_loc
     self.x509_cert_file = self.encryption.x509_cert_loc
@@ -60,19 +67,22 @@ class Peer:
     
     self.load_metadata_file()
     
-    self.update_ip_address()
-
 
   def run(self, client_sleep_time=5):
     """Start operating as a both a peer client and peer server."""
-    peer_server_thread = threading.Thread(target=self.run_peer_server, args=())
+    # Do preliminary updates before coming online
+    self.update_ip_address()
+    #self.check_store()
     peer_client_thread = threading.Thread(target=self.run_peer_client, args=(client_sleep_time))
-    peer_server_thread.start()
     peer_client_thread.start()
+    peer_server_thread = threading.Thread(target=self.run_peer_server, args=())
+    peer_server_thread.start()
 
   def run_peer_client(self, sleep_time):
     while True:
       # FIXME: STUB. Update revision number upon change to personal store.
+      #self.check_store()
+      self.update_ip_address()
       
       # Find a peer to connect to and initiate a session.
       peer_id = self.select_sync_peer()
@@ -239,12 +249,10 @@ class Peer:
     """
     peer_id = self.generate_peer_id()
     store_id = self.generate_store_id()
-    ip_address = json.load(urlopen('http://httpbin.org/ip'))['origin'] # FIXME: Would like to sign this
     
     # FIXME: Idempotently initialize/ensure personal directory structure here including initial revision number.
-    revision_data = self.encryption.get_signed_revision()
-    peer_dict = {peer_id: PeerData(ip_address, {store_id: revision_data})}
-    store_dict = {store_id: StoreData(revision_data, set([peer_id]))}
+    peer_dict = {peer_id: PeerData(None, {store_id: None})}
+    store_dict = {store_id: StoreData(None, set())}
     
     # Load the initial values into a `Metadata` object.
     metadata = Metadata(peer_id, peer_dict, store_id, store_dict)
@@ -542,11 +550,11 @@ class Peer:
 
     
   def update_store_revision(self, store_id, revision_data, lock=None):
-     # Make sure we have the lock before proceeding
+    # Make sure we have the lock before proceeding
     if not lock:
       lock = threading.Lock()
     
-   # Create a copy of the pertinent data in which to stage our changes.
+    # Create a copy of the pertinent data in which to stage our changes.
     store_dict = copy.deepcopy(self.store_dict)
     store_dict[store_id].revision_data = revision_data
     
@@ -554,6 +562,13 @@ class Peer:
     metadata = Metadata(self.peer_id, self.peer_dict, self.store_id, store_dict)
     self.update_metadata(metadata, lock)
     
+  def check_store(self):
+    """
+    Check this peer's own store for changes generating new revision data and a 
+    new Merkel tree upon updates.
+    """
+    # Compute the Merkel tree from scratch
+    # FIXME: STUB.
     
   ##################################
   # Encryption object interactions #
@@ -602,11 +617,12 @@ class Peer:
     """
     Verify the signature of a received revision number.
     """
-    # FIXME: Implement.
-    return True
+    pickled_payload = cPickle.dumps( (revision_data.revision_number, revision_data.store_hash) )
+    
+    return self.verify(store_id, revision_data.signature, pickled_payload)
   
   
-  def get_merkel_tree(self, store_id):
+  def get_merkel_tree(self, store_id, nonce=None):
     """Get the locally computed Merkel tree for a store."""
     # Own store
     if store_id == self.store_id:
@@ -654,6 +670,35 @@ class Peer:
     else:
       self.update_store_revision(store_id, None)
       
+  def sign_new_revision(self):
+    """Create and record new revision data for the peer's own store."""
+    # Increment up from the current revision number
+    revision_number = self.store_dict[self.store_id].revision_data.revision_number + 1
+    
+    # Recalculate the store's hash
+    store_hash = self.get_store_hash(self.store_id)
+    
+    # Pickle and sign the revision data
+    pickled_payload = cPickle.dumps( (revision_number, store_hash) )
+    signature = self.sign(pickled_payload)
+    
+    # Enact the change
+    revision_data = RevisionData(revision_number, store_hash, signature)
+    self.update_store_revision(self.store_id, revision_data)
+    
+  def sign(self, payload):
+    private_key = self.encryption.import_private_key()
+    payload_hash = Crypto.Hash.SHA256(payload)
+    signature = Crypto.Signature.PKCS1_v1_5.new(private_key).sign(payload_hash)
+    return signature
+  
+  def verify(self, store_id, signature, payload):
+    public_key = self.encryption.import_public_key(store_id)
+    payload_hash = Crypto.Hash.SHA256(payload)
+    
+    return Crypto.Signature.PKCS1_v1_5.new(public_key).verify(payload_hash, signature)
+  
+  
   #########################
   # Communication helpers #
   #########################
