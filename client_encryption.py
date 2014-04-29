@@ -11,51 +11,62 @@ class ClientEncryption:
   personal_path = 'personal'
   files_path = 'files'
 
-  ### functions to get certain file paths
+  ### functions to get foreign file paths
   
   # take a UUID and return the location for the private key file
-  def private_foreign_key_loc(self, uuid):
+  def private_foreign_key_loc(self, uuid):'
+  """Get a foreign private key location given a UUID.
+     Generally used only for testing purposes."""
       return os.path.join(self.directory, uuid, self.backup_path, "private_key.ppk")
   # take a UUID and return the location for the public key file
   def public_foreign_key_loc(self, uuid):
+  """Get a foreign key location given a UUID"""
       return os.path.join(self.directory, uuid, self.backup_path, "public_key.PEM")
   # take a UUID and return the location for the personal encrypter file
   def personal_foreign_encrypter_loc(self, uuid):
+  """Get a foreign encrypter file location given a UUID.
+     Generally used only for testing."""
       return os.path.join(self.directory, uuid, self.backup_path, "personal_encrypter.txt")
   # take a UUID and return the location for the revision number file
   def foreign_rev_no_loc(self, uuid):
+  """Get a personal foreign revision number file location given a UUID.
+     Generally used only for testing."""
       return os.path.join(self.directory, uuid, self.backup_path, "rev_no.txt")
   # take a UUID and return the location of their files.
   def foreign_files_loc(self,uuid):
+  """Get the file location for a peer's files given a UUID."""
       return os.path.join(self.directory, uuid, self.files_path)
   # take a UUID and return the bookkeeping location of files
   def foreign_backup_loc(self,uuid):
+  """Get the file location for a foriegn user's backup files given a UUID."""
       return os.path.join(self.directory, uuid, self.backup_path)
 
-  # get personal files location
-  def get_personal_files_loc(self):
-      return os.path.join(self.directory, self.personal_path, self.backup_path)
 
 
   ### merkle tree functions
     
   # create merkle tree and store
   def make_personal_mt(self):
+  """Make a Merkle tree for the self's directory and store data."""
       mtree = mt.MarkleTree(self.files_loc)
       mt_pickling.pickle_data(mtree,self.mt_loc)
       return
   # get personal merkle tree
   def get_personal_mt(self):
+  """Get the stored personal Merkle Tree"""
       mt_pickling.unpickle_data(self.mt_loc)
   # produce Merkle tree for personal files
-  def produce_foreign_mt(self,uuid, salt=''):
-      return mt.MarkleTree(self.files_loc)
+  def produce_personal_mt(self,salt=''):
+  """Produce a personal Merkle tree, include salt if wanted."""
+      return mt.MarkleTree(self.files_loc,salt)
+
+  ## foreign merkle tree functions
   # take a UUID and return the merkle tree for all of their files
   def get_foreign_mt(self,uuid, salt=''):
       return mt.MarkleTree(self.foreign_files_loc(uuid), salt='')
   
 
-  ### revision number function
+  ### revision number functions
 
   # get the revision number
   def get_rev_number(self):
@@ -68,16 +79,18 @@ class ClientEncryption:
     f.close()
     return
 
+  ##foreign revision number functions
   # take a uuid and return the tuple message (revision number, tophash, and signature)
   def get_foreign_rev_no(self,uuid):
       return mt_pickling.unpickle_data(self.foreign_rev_no_loc())
-
   # take a uuid and tuple message (revision number, tophash, and signature) and store
   def store_foreign_rev_no(self,uuid,tup):
       return mt_pickling.pickle_data(tup,self.foreign_rev_no_loc())
 
-    
 
+  ### generating personal files functions
+    
+  # function that produces a personal and private key for the user
   def generate_public_keypair(self):
     random_generator = Random.new().read
     key = RSA.generate(1024, random_generator)
@@ -94,6 +107,21 @@ class ClientEncryption:
                           ' -out ' + self.x509_cert_loc,
                           shell=True)
 
+  # generate a new personal encrypter file
+  def generate_encrypter(self):
+    f_personal = open(self.personal_encrypter_loc, 'w')
+    f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
+    f_personal.write(Random.get_random_bytes(8))
+    f_personal.close()
+    return
+
+  # generate a new revision number file
+  def generate_rev_no(self):
+    f_rev = open(self.rev_no_loc, 'w')  
+    f_rev.write('1')
+    f_rev.close()
+    return
+
   # initialized pubic and private key of personal computer
   def __init__(self, directory=os.getcwd()):
     
@@ -107,7 +135,9 @@ class ClientEncryption:
       self.rev_no_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "rev_no.txt")
       self.mt_loc = os.path.join(self.directory, self.personal_path, self.backup_path, "mtree.mt")
       self.files_loc = os.path.join(self.directory, self.personal_path, self.files_path)
-      
+      self.backup_files_loc = os.path.join(self.directory, self.personal_path, self.backup_path)
+
+      #check to make sure file directories exist
       if(os.path.isdir(self.directory) != True):
           os.makedirs(self.directory)
       if(os.path.isdir(os.path.join(self.directory, self.personal_path)) != True):
@@ -121,17 +151,14 @@ class ClientEncryption:
       if not (os.path.isfile(self.private_key_loc) and os.path.isfile(self.public_key_loc)):
         self.generate_public_keypair()
         self.generate_x509_cert()
-      
-      f_personal = open(self.personal_encrypter_loc, 'w')
-      f_rev = open(self.rev_no_loc, 'w')
-      
-      f_personal.write(''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(16)))
-      f_personal.write(Random.get_random_bytes(8))
-      f_rev.write('1')
 
-      f_personal.close()
-      f_rev.close();
+      # generate personal encrypter file if it doesn't exist
+      if not os.path.isfile(self.personal_encrypter_loc):
+        self.generate_encrypter()
 
+      # generate revision number if doesn't exist
+      if not os.path.isfile(self.rev_no_loc):
+        self.generate_rev_no()
       
       return
     
@@ -480,19 +507,31 @@ class ClientEncryption:
       f_rev.close()
       return
 
-  # initialize a peer, check to make sure their keys exists  
+  # initialize a peer, print all locations
   def init_peer_test(self):
-    peer_uuid = '100'
-    self.init_remote_test(peer_uuid)
-    print os.path.exists(self.private_foreign_key_loc(peer_uuid))
-    print os.path.exists(self.public_foreign_key_loc(peer_uuid))
-    print os.path.exists(self.private_foreign_key_loc(peer_uuid))
-    print self.private_foreign_key_loc(peer_uuid)
-
-  # init
+    uuid = '200'
+    self.init_remote_test(uuid)
+    print self.private_foreign_key_loc(uuid)
+    print self.public_foreign_key_loc(uuid)
+    print self.personal_foreign_encrypter_loc(uuid)
+    print self.foreign_rev_no_loc(uuid)
+    print self.foreign_files_loc(uuid)
+    print self.foreign_backup_loc(uuid)
     
+  #initialize self and print all locations
+  def init_test(self):
+    self.__init__()
+    print self.directory
+    print self.personal_path_full
+    print self.private_key_loc
+    print self.public_key_loc
+    print self.x509_cert_loc
+    print self.personal_encrypter_loc
+    print self.rev_no_loc
+    print self.mt_loc
+    print self.files_loc
     
-
 if __name__ == '__main__':
   ClientEncryption().complex_test()
   ClientEncryption().init_peer_test()
+  ClientEncryption().init_test()
