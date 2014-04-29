@@ -115,14 +115,6 @@ class Peer:
     pickled_payload = self.receive_expected_message(skt_ssl, 'handshake_req')
     (client_peer_id, client_peer_dict) = self.unpickle('handshake_req', pickled_payload)
     
-    # FIXME: For known client peers, will want to verify the public key provided to the SSL.
-    
-    # The peer client's knowledge of itself is at least as up to date as ours, so attempt to get up to date.
-    self.record_peer_data(client_peer_id, client_peer_dict[client_peer_id])
-    
-    # Parse useful gossip from the peer client's peer dictionary
-    self.learn_metadata_gossip(client_peer_dict)
-    
     # If the peer client is in/made it into our dictionary (i.e. we share a store with them), handshake back.
     if client_peer_id in self.peer_dict.keys():
       self.send_handshake_req(skt_ssl)
@@ -131,6 +123,22 @@ class Peer:
       self.send_disconnect_req(skt_ssl, 'No stores in common.')
       raise Exception() # TODO: At least provide a specific exception type to parse.
 
+    # FIXME: For known client peers, will want to verify the public key provided to the SSL.
+    
+    # FIXME
+    # Receive and record the peer client's public key file.
+    pickled_payload = self.receive_expected_message(skt_ssl, 'public_key_msg')
+    public_key_file_contents = self.unpickle('public_key_msg', pickled_payload)
+    if not os.path.isfile(self.get_peer_key_path(client_peer_id)):
+      with open(self.get_peer_key_path(client_peer_id), 'w') as f:
+        f.write(public_key_file_contents)
+    
+    # The peer client's knowledge of itself is at least as up to date as ours, so attempt to get up to date.
+    self.record_peer_data(client_peer_id, client_peer_dict[client_peer_id])
+    
+    # Parse useful gossip from the peer client's peer dictionary
+    self.learn_metadata_gossip(client_peer_dict)
+    
     # Get the peer client's sync request.
     pickled_payload = self.receive_expected_message(skt_ssl, 'sync_req')
     sync_store_id = self.unpickle('sync_req', pickled_payload)
@@ -153,6 +161,10 @@ class Peer:
     # Get the server's response handshake.
     pickled_payload = self.receive_expected_message(skt_ssl, 'handshake_req')
     (server_peer_id, server_peer_dict) = self.unpickle('handshake_req', pickled_payload)
+    
+    # FIXME
+    # Always send public key file to server
+    self.send_public_key_msg(skt_ssl)
     
     # The peer server's knowledge of itself is at least as up to date as ours, so trust what it says.
     self.record_peer_data(server_peer_id, server_peer_dict[server_peer_id])
@@ -450,8 +462,8 @@ class Peer:
     into effect.
     """
     # Make sure we have the lock before proceeding
-    if not lock_acquired:
-      self.lock.acquire()
+#     if not lock_acquired:
+#       self.lock.acquire()
     
     # Only update if necessary.
     if metadata == self.metadata:
@@ -481,8 +493,8 @@ class Peer:
       directory_merkel_tree.print_tree(self.merkel_tree)
     
     # Release the lock if we personally acquired it
-    if not lock_acquired:
-      self.lock.release()
+#     if not lock_acquired:
+#       self.lock.release()
     
     
 #   # FIXME: Would want similar functionality for server requested associations
@@ -533,8 +545,8 @@ class Peer:
     Update the recorded metadata for an individual peer.
     """
     # Make sure we have the lock before proceeding
-    if not lock_acquired:
-      self.lock.acquire()
+#     if not lock_acquired:
+#       self.lock.acquire()
     
     peer_mutual_stores = set(peer_data.store_revisions.keys()).intersection(set(self.store_dict.keys()))
     # Only want to track peers that are associated with a store we're concerned with.
@@ -586,8 +598,8 @@ class Peer:
     self.update_metadata(metadata, True)
 
     # Release the lock if we personally acquired it
-    if not lock_acquired:
-      self.lock.release()
+#     if not lock_acquired:
+#       self.lock.release()
       
   
   def learn_metadata_gossip(self, peer_dict, lock=False):
@@ -595,8 +607,8 @@ class Peer:
     Update this peer's metadata based on gossip received from another peer.
     """
     # Make sure we have the lock before proceeding
-    if not lock:
-      self.lock.acquire()
+#     if not lock:
+#       self.lock.acquire()
     
     # Update our metadata on mutual peers as needed.
     mutual_peers = set(peer_dict.keys()).intersection(set(self.peer_dict.keys()))
@@ -622,15 +634,15 @@ class Peer:
         self.record_peer_data(peer_id, peer_dict[peer_id], True)
     
     # Release the lock if we personally acquired it
-    if not lock:
-      self.lock.release()
+#     if not lock:
+#       self.lock.release()
     
     
   def update_ip_address(self, lock=False):
     """Update this peer's already existing IP address data."""
     # Make sure we have the lock before proceeding
-    if not lock:
-      self.lock.acquire()
+#     if not lock:
+#       self.lock.acquire()
     
     # Create staging copy of data to be changed
     peer_dict = copy.deepcopy(self.peer_dict)
@@ -646,8 +658,8 @@ class Peer:
     self.update_metadata(metadata, True)
     
     # Release the lock if we personally acquired it
-    if not lock:
-      self.lock.release()
+#     if not lock:
+#       self.lock.release()
     
     
   def update_peer_revision(self, peer_id, store_id, failed=False, lock=None):
@@ -657,8 +669,8 @@ class Peer:
     ours.
     """
     # Make sure we have the lock before proceeding
-    if not lock:
-      self.lock.acquire()
+#     if not lock:
+#       self.lock.acquire()
     
     # Create a copy of the pertinent data in which to stage our changes.
     peer_store_revisions = copy.deepcopy(self.peer_dict[peer_id].store_revisions)
@@ -675,14 +687,14 @@ class Peer:
     self.record_peer_data(peer_id, peer_data, True)
 
     # Release the lock if we personally acquired it
-    if not lock:
-      self.lock.release()
+#     if not lock:
+#       self.lock.release()
     
     
   def update_store_revision(self, store_id, revision_data, lock=None):
     # Make sure we have the lock before proceeding
-    if not lock:
-      self.lock.acquire()
+#     if not lock:
+#       self.lock.acquire()
     
     # Create a copy of the pertinent data in which to stage our changes.
     store_dict = copy.deepcopy(self.store_dict)
@@ -693,8 +705,8 @@ class Peer:
     self.update_metadata(metadata, True)
     
     # Release the lock if we personally acquired it
-    if not lock:
-      self.lock.release()
+#     if not lock:
+#       self.lock.release()
     
     
   def check_store(self):
@@ -837,13 +849,13 @@ class Peer:
     self.update_store_revision(self.store_id, revision_data)
     
   def sign(self, payload):
-    payload_hash = Crypto.Hash.SHA256(payload)
+    payload_hash = Crypto.Hash.SHA256.new(payload)
     signature = Crypto.Signature.PKCS1_v1_5.new(self.private_key).sign(payload_hash)
     return signature
   
   def verify(self, store_id, signature, payload):
     public_key = self.get_store_key(store_id)
-    payload_hash = Crypto.Hash.SHA256(payload)
+    payload_hash = Crypto.Hash.SHA256.new(payload)
     
     return Crypto.Signature.PKCS1_v1_5.new(public_key).verify(payload_hash, signature)
   
@@ -1159,6 +1171,14 @@ class Peer:
     message_data = disconnect_message
     self.send(skt, message_id, message_data)    
 
+  # FIXME
+  def send_public_key_msg(self, skt):
+    message_id = message_ids['public_key_msg']
+    with open(self.public_key_file, 'r') as f:
+      message_data = f.read() 
+    self.send(skt, message_id, message_data)    
+
+
 
   ###########################
   # Message receipt methods #
@@ -1286,6 +1306,13 @@ class Peer:
     
     return verification_hash
   
+  def unpickle_public_key_msg(self, pickled_payload):
+    public_key_file_contents = cPickle.loads(pickled_payload)
+    self.debug_print( [(1, 'Unpickled a \'public_key_msg\' message.'),
+                       (3, 'public_key_file_contents = '+public_key_file_contents)] )
+    
+    return public_key_file_contents
+  
   #################################
   # Debug and development methods #
   #################################
@@ -1295,45 +1322,45 @@ class Peer:
     """
     Manually associate with a peer and prepare to be a backup for that peer's store.
     """
-    # Idempotency. Also, might've already learned about this peer through gossip about a mutual store. 
-    if peer_id not in self.peer_dict.keys():
-      # Copy the public key and associate it to the specified peer.
-      shutil.copyfile(public_key_file, self.get_peer_key_path(peer_id))
+#     # Idempotency. Also, might've already learned about this peer through gossip about a mutual store. 
+#     if peer_id not in self.peer_dict.keys():
+    # Copy the public key and associate it to the specified peer.
+    shutil.copyfile(public_key_file, self.get_peer_key_path(peer_id))
     
     # Get the key object for the public key and generate the corresponding store ID
     public_key = self.get_peer_key(peer_id)
     # Calculate the store ID that corresponds to this public key.
     store_id = self.generate_store_id(public_key)
 
-    # Idempotency.
-    if store_id not in self.store_dict.keys():
-      # Store another copy of the key assigned to its store ID.
-      shutil.copyfile(public_key_file, self.get_store_key_path(store_id))
-      
-      # Create the store directory.
-      if not os.path.isdir(self.get_store_path(store_id)):
-        os.makedirs(self.get_store_path(store_id))
-      
-      # Create a copy of our `store_dict` for staging changes and insert the new metadata.
-      store_dict = copy.deepcopy(self.store_dict)
-      store_data = StoreData(revision_data=None, peers=set([peer_id]))
-      store_dict[store_id] = store_data
-      
-      # Prepare the corresponding changes to our `peer_dict`
-      if peer_id in self.peer_dict.keys():
-        store_revisions = self.peer_dict[peer_id].store_revisions
-      else:
-        store_revisions = dict()
-      store_revisions[store_id] = None
-      peer_data = PeerData(ip_address, store_revisions)
-      
-      # Create a copy of our `peer_dict` for staging changes and insert the new metadata.
-      peer_dict = copy.deepcopy(self.peer_dict)
-      peer_dict[peer_id] = peer_data
-      
-      # Enact the changes.
-      metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
-      self.update_metadata(metadata)
+#     # Idempotency.
+#     if store_id not in self.store_dict.keys():
+    # Store another copy of the key assigned to its store ID.
+    shutil.copyfile(public_key_file, self.get_store_key_path(store_id))
+    
+    # Create the store directory.
+    if not os.path.isdir(self.get_store_path(store_id)):
+      os.makedirs(self.get_store_path(store_id))
+    
+    # Create a copy of our `store_dict` for staging changes and insert the new metadata.
+    store_dict = copy.deepcopy(self.store_dict)
+    store_data = StoreData(revision_data=None, peers=set([peer_id]))
+    store_dict[store_id] = store_data
+    
+    # Prepare the corresponding changes to our `peer_dict`
+    if peer_id in self.peer_dict.keys():
+      store_revisions = self.peer_dict[peer_id].store_revisions
+    else:
+      store_revisions = dict()
+    store_revisions[store_id] = None
+    peer_data = PeerData(ip_address, store_revisions)
+    
+    # Create a copy of our `peer_dict` for staging changes and insert the new metadata.
+    peer_dict = copy.deepcopy(self.peer_dict)
+    peer_dict[peer_id] = peer_data
+    
+    # Enact the changes.
+    metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
+    self.update_metadata(metadata)
     
     
   def debug_print(self, print_tuples):
@@ -1413,28 +1440,18 @@ class Peer:
     skt_listener.close()
     
 
-  def test_client_handshake(self, peer_ip):
-    # Back up the existing metadata.
-    metadata_backup = self.metadata
+  def test_client_handshake(self, peer_id):
     
-    # Inject a new peer.
-    test_peer_data = PeerData(ip_address=peer_ip, store_revisions={self.store_id: None})
-    self.record_peer_data(-1, test_peer_data)
-    
-    skt_ssl = self.connect_to_peer(-1)
+    skt_ssl = self.connect_to_peer(peer_id)
     try:
       self.peer_client_session(skt_ssl)
     except:
       skt_ssl.shutdown(socket.SHUT_RDWR)
       skt_ssl.close()
-      # Restore metadata backup
-      self.update_metadata(metadata_backup)
       raise
     
     skt_ssl.shutdown(socket.SHUT_RDWR)
     skt_ssl.close()
-    # Restore metadata backup
-    self.update_metadata(metadata_backup)
 
    
   def test_server_handshake(self):
@@ -1471,8 +1488,10 @@ def test_handshake():
   client = Peer(debug_verbosity=5, debug_preamble='Peer Client:')
   server = Peer(debug_verbosity=5, debug_preamble='Peer Server:')
   
+  client.manually_associate(server.peer_id, 'localhost', server.public_key_file)
+  
   t1 = threading.Thread(target=server.test_server_handshake, args=())
-  t2 = threading.Thread(target=client.test_client_handshake, args=('localhost',))
+  t2 = threading.Thread(target=client.test_client_handshake, args=(server.peer_id,))
   t1.start()
   t2.start()
   t2.join()
@@ -1487,7 +1506,8 @@ message_ids = {'handshake_req'     : 0,
                'sync_complete_msg' : 5,
                'verify_sync_req'   : 6,
                'verify_sync_resp'  : 7,
-               'disconnect_req'    : 8
+               'disconnect_req'    : 8,
+               'public_key_msg'    : 9    # FIXME: A quick hack; seriously fix
                }
 
 unpicklers = {'handshake_req'     : Peer.unpickle_handshake_req,
@@ -1498,7 +1518,8 @@ unpicklers = {'handshake_req'     : Peer.unpickle_handshake_req,
               'sync_complete_msg' : Peer.unpickle_sync_complete_msg,
               'verify_sync_req'   : Peer.unpickle_verify_sync_req, 
               'verify_sync_resp'  : Peer.unpickle_verify_sync_resp,
-              'disconnect_req'    : Peer.unpickle_delete_file_msg
+              'disconnect_req'    : Peer.unpickle_delete_file_msg,
+              'public_key_msg'    : Peer.unpickle_public_key_msg
               }
   
 
