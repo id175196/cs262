@@ -21,14 +21,17 @@ import threading
 import time
 import Crypto.Signature
 import Crypto.Hash
-
+import Crypto.Cipher.AES
+import Crypto.Random
+import base64
+import directory_merkel_tree
 
 # Named tuples have (immutable) class-like semantics for accessing fields, but are straightforward to pickle/unpickle.
 # The following types are for important data whose contents and format should be relatively stable at this point.
 PeerData = namedtuple('PeerData', 'ip_address, store_revisions')
 StoreData = namedtuple('StoreData', 'revision_data, peers')
 RevisionData = namedtuple('RevisionData', 'revision_number, store_hash, signature')
-Metadata = namedtuple('Metadata', 'peer_id, peer_dict, store_id, store_dict')
+Metadata = namedtuple('Metadata', 'peer_id, peer_dict, store_id, store_dict, aes_key, aes_iv, merkel_tree')
 
 
 # A necessary constant for unpacking messages
@@ -49,11 +52,12 @@ class Peer:
                debug_prefix=None,
                _metadata=None,
                lock=threading.Lock(),
-               merkel_tree=None ):
+               merkel_tree=None,
+               aes_key=None,
+               aes_iv=None ):
     """Initialize a `Peer` object."""
     self.debug_verbosity = debug_verbosity
     self.debug_preamble = debug_prefix
-    self._metadata = _metadata
     self.lock = lock
     
     # Get the encryption object
@@ -72,18 +76,14 @@ class Peer:
     """Start operating as a both a peer client and peer server."""
     # Do preliminary updates before coming online
     self.update_ip_address()
-    #self.check_store()
+    self.check_store()
     peer_client_thread = threading.Thread(target=self.run_peer_client, args=(client_sleep_time))
     peer_client_thread.start()
     peer_server_thread = threading.Thread(target=self.run_peer_server, args=())
     peer_server_thread.start()
 
   def run_peer_client(self, sleep_time):
-    while True:
-      # FIXME: STUB. Update revision number upon change to personal store.
-      #self.check_store()
-      self.update_ip_address()
-      
+    while True:      
       # Find a peer to connect to and initiate a session.
       peer_id = self.select_sync_peer()
       
@@ -97,6 +97,9 @@ class Peer:
       
       # Sleep a while before iterating the loop again.
       time.sleep(sleep_time)
+      self.check_store() # FIXME: This is an intensive operation. Instead watch the filesystem for changes and mark with a "dirty" flag.
+      self.update_ip_address()
+
     
      
   def run_peer_server(self):
@@ -249,13 +252,19 @@ class Peer:
     """
     peer_id = self.generate_peer_id()
     store_id = self.generate_store_id()
+    ip_address = None # Automatically set upon running the peer
+    own_revision_data = None # Automatically generated upon running the peer
+    merkel_tree = None # Automatically generated upon running the peer
+    initial_peers = set() # No peers are known
+    aes_key = Crypto.Random.new().read(Crypto.Cipher.AES.block_size)
+    aes_iv = Crypto.Random.new().read(Crypto.Cipher.AES.block_size)
     
     # FIXME: Idempotently initialize/ensure personal directory structure here including initial revision number.
-    peer_dict = {peer_id: PeerData(None, {store_id: None})}
-    store_dict = {store_id: StoreData(None, set())}
+    peer_dict = {peer_id: PeerData(ip_address, {store_id: own_revision_data})}
+    store_dict = {store_id: StoreData(own_revision_data, initial_peers)}
     
     # Load the initial values into a `Metadata` object.
-    metadata = Metadata(peer_id, peer_dict, store_id, store_dict)
+    metadata = Metadata(peer_id, peer_dict, store_id, store_dict, aes_key, aes_iv, merkel_tree)
     return metadata
     
   
@@ -318,6 +327,18 @@ class Peer:
     """
     return self.metadata.store_dict 
   
+  @property
+  def merkel_tree(self):
+    return self.metadata.merkel_tree
+  
+  @property
+  def aes_key(self):
+    return self.metadata.aes_key
+  
+  @property
+  def aes_iv(self):
+    return self.metadata.aes_iv
+  
   # FIXME: This is returning `None` even though `self._metadata` gives the correct output.
   @property
   def metadata(self):
@@ -365,7 +386,14 @@ class Peer:
                        (2, 'peer_id = {}'.format(self.peer_id)),
                        (2, 'peer_dict = {}'.format(self.peer_dict)),
                        (2, 'store_id = {}'.format(self.store_id)),
-                       (2, 'store_dict = {}'.format(self.store_dict))] )
+                       (2, 'store_dict = {}'.format(self.store_dict)),
+                       (3, '!!!! SO INSECURE !!!!'),
+                       (3, 'aes_key = {}'.format(self.aes_key)),
+                       (3, 'aes_iv = {}'.format(self.aes_iv)),
+                       (4, 'merkel_tree:')] )
+    if self.debug_verbosity >= 4:
+      self.merkel_tree.PrintHashList()
+    
     
     
 #   # FIXME: Would want similar functionality for server requested associations
@@ -466,7 +494,7 @@ class Peer:
     
     # Enact the update.
     peer_dict[peer_id] = PeerData(ip_address, store_revisions)
-    metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict)
+    metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
     self.update_metadata(metadata, lock)
   
   
@@ -520,7 +548,7 @@ class Peer:
     peer_dict[self.peer_id] = peer_data
     
     # Enact the change.
-    metadata = Metadata(self.peer_id, peer_dict, self.store_id, self.store_dict)
+    metadata = Metadata(self.peer_id, peer_dict, self.store_id, self.store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
     self.update_metadata(metadata, lock)
     
     
@@ -559,20 +587,34 @@ class Peer:
     store_dict[store_id].revision_data = revision_data
     
     # Enact the change
-    metadata = Metadata(self.peer_id, self.peer_dict, self.store_id, store_dict)
+    metadata = Metadata(self.peer_id, self.peer_dict, self.store_id, store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
     self.update_metadata(metadata, lock)
+    
     
   def check_store(self):
     """
     Check this peer's own store for changes generating new revision data and a 
     new Merkel tree upon updates.
     """
-    # Compute the Merkel tree from scratch
-    # FIXME: STUB.
+    # Compute the Merkel tree from scratch.
+    new_merkel_tree = directory_merkel_tree.make_dmt(self.encryption.get_personal_files_loc(), encrypter=self)
+    if self.merkel_tree == new_merkel_tree:
+      return
     
-  ##################################
-  # Encryption object interactions #
-  ##################################
+    # Our store has changed so get, sign, and record the new revision data.
+    revision_number = self.store_dict[self.store_id].revision_data.revision_number + 1
+    store_hash = new_merkel_tree.dmt_hash
+    pickled_payload = cPickle.dumps(revision_number, store_hash)
+    signature = self.sign(pickled_payload)
+    
+    # Enact the update.
+    revision_data = RevisionData(revision_number, store_hash, signature)
+    self.update_store_revision(self.store_id, revision_data)
+    
+    
+  #########################
+  # Cryptographic methods #
+  #########################
   
   def record_peer_pubkey(self, peer_id, peer_pubkey):
     """
@@ -643,8 +685,7 @@ class Peer:
     return updated_files, deleted_files
     
   def get_store_hash(self, store_id, nonce=''):
-    # FIXME: STUB. Still no way of salting the "personal tree"
-    None
+    merkel_tree = directory_merkel_tree.make_dmt(self.get_store_location(store_id), nonce)
     
   def verify_sync(self, peer_id, store_id):
     """
@@ -698,7 +739,27 @@ class Peer:
     
     return Crypto.Signature.PKCS1_v1_5.new(public_key).verify(payload_hash, signature)
   
+  def encrypt(self, plaintext):
+    cipher = Crypto.Cipher.AES.new(self.aes_key, Crypto.Cipher.AES.MODE_CFB, self.aes_iv)
+    ciphertext = self.aes_iv + cipher.encrypt(plaintext)
+    return ciphertext
+    
+  def decrypt(self, ciphertext):
+    cipher = Crypto.Cipher.AES.new(self.aes_key, Crypto.Cipher.AES.MODE_CFB, self.aes_iv)
+    plaintext = cipher.decrypt(ciphertext)[Crypto.Cipher.AES.block_size:]
+    return plaintext
+
+  def encrypt_filename(self, filename):
+    # FIXME: Totally untested, cross your fingers.
+    encrypted_filename = self.encrypt(filename)
+    
+#     # Just (unsafely) drop illegal characters. A ripoff from http://stackoverflow.com/a/7406369
+#     keepcharacters = (' ','.','_')
+#     safely_encrypted_filename = "".join(c for c in encrypted_filename if c.isalnum() or c in keepcharacters).rstrip()
+    safely_encrypted_filename = base64.urlsafe_b64encode(encrypted_filename)
+    return safely_encrypted_filename
   
+   
   #########################
   # Communication helpers #
   #########################
@@ -1160,7 +1221,7 @@ class Peer:
       peer_dict[peer_id] = peer_data
       
       # Enact the changes.
-      metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict)
+      metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
       self.update_metadata(metadata)
     
     
@@ -1206,6 +1267,7 @@ class Peer:
     self.debug_print( (1, 'Unexpected message received.'))
     
     # Lookup by value, an abuse of the dictionary type...
+    # FIXME: Use `iteritems()` instead of `items()`
     message_type = [m_type for m_type, m_id in self.message_ids.items() if m_id == message_id][0]
     
     # Allow this message type's unpickler the opportunity to debug print a description of the message.
