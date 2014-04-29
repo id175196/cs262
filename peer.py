@@ -4,7 +4,6 @@ The peer class is really a lot bigger than I was expecting.
 
 import socket
 import ssl
-import client_encryption
 import os
 import cPickle # Supposed to be orders of magnitude faster than `pickle`, but with some limitations limitations on (esoteric) subclassing of `Pickler`/`Unpickler`.
 import hashlib
@@ -16,15 +15,13 @@ import json
 import copy
 from urllib2 import urlopen
 from collections import namedtuple
-import mt # Here because we unpickle Merkel trees. I'm still not certain this import is actually necessary...
 import threading
 import time
-import Crypto.Signature
-import Crypto.Hash
-import Crypto.Cipher.AES
-import Crypto.Random
+import Crypto.Signature, Crypto.Hash, Crypto.Cipher.AES, Crypto.PublicKey.RSA, Crypto.Random
 import base64
 import directory_merkel_tree
+import subprocess
+
 
 # Named tuples have (immutable) class-like semantics for accessing fields, but are straightforward to pickle/unpickle.
 # The following types are for important data whose contents and format should be relatively stable at this point.
@@ -34,7 +31,7 @@ RevisionData = namedtuple('RevisionData', 'revision_number, store_hash, signatur
 Metadata = namedtuple('Metadata', 'peer_id, peer_dict, store_id, store_dict, aes_key, aes_iv, merkel_tree')
 
 
-# A necessary constant for unpacking messages
+# A needed constant for unpacking messages
 header_size = struct.calcsize('!I')
 
 
@@ -47,27 +44,26 @@ class Peer:
   # These are the goods, implemented at a higher level than the lower methods.
 
   def __init__(self,
-               directory=os.getcwd(),
+               own_store_directory=os.path.join(os.getcwd(), 'own_store'),
+               root_directory=os.getcwd(),
                debug_verbosity=0,
-               debug_prefix=None,
+               debug_preamble=None,
                _metadata=None,
-               lock=threading.Lock(),
-               merkel_tree=None,
-               aes_key=None,
-               aes_iv=None ):
+               lock=threading.RLock()
+               ):
     """Initialize a `Peer` object."""
+    
+    # Set any incoming overrides
+    self.own_store_directory = own_store_directory
+    self.root_directory = root_directory
     self.debug_verbosity = debug_verbosity
-    self.debug_preamble = debug_prefix
+    self.debug_preamble = debug_preamble
+    self._metadata = _metadata
     self.lock = lock
     
-    # Get the encryption object
-    # FIXME: On first run_peer_server, need `ClientEncryption` to initialize directory structure and sign revision 0.
-    self.encryption = client_encryption.ClientEncryption(directory)
-    
-    self.private_key_file = self.encryption.private_key_loc
-    self.x509_cert_file = self.encryption.x509_cert_loc
-    self.metadata_file = os.path.join(self.encryption.personal_path_full,'metadata_file.pickle')
-    self.backup_metadata_file = self.metadata_file + '.bak'
+    self.initialize_directory_structure()
+        
+    self.initialize_keys()
     
     self.load_metadata_file()
     
@@ -212,10 +208,125 @@ class Peer:
   # Initialization methods #
   ##########################
   
+  def generate_initial_metadata(self):
+    """
+    Generate a peer's important metadata the first time it is instantiated.
+    """
+    peer_id = self.generate_peer_id()
+    store_id = self.generate_store_id()
+    ip_address = None # Automatically set upon running the peer
+    own_revision_data = RevisionData(revision_number=-1, store_hash=None, signature=None) # Automatically updated upon running the peer.
+    merkel_tree = directory_merkel_tree.make_dmt(self.own_store_directory)
+    initial_peers = set() # No peers are known
+    aes_key = Crypto.Random.new().read(Crypto.Cipher.AES.block_size)
+    aes_iv = Crypto.Random.new().read(Crypto.Cipher.AES.block_size)
+    
+    # FIXME: Idempotently initialize/ensure personal directory structure here including initial revision number.
+    peer_dict = {peer_id: PeerData(ip_address, {store_id: own_revision_data})}
+    store_dict = {store_id: StoreData(own_revision_data, initial_peers)}
+    
+    # Load the initial values into a `Metadata` object.
+    metadata = Metadata(peer_id, peer_dict, store_id, store_dict, aes_key, aes_iv, merkel_tree)
+    return metadata
+    
+  
+  def generate_peer_id(self):
+    """
+    Generate a quasi-unique ID for this peer using a hash (SHA-256, which
+    currently has no known collisions) of the owner's public key "salted" with 
+    32 random bits.
+    """
+    cipher = hashlib.sha256(self.public_key.exportKey())
+    cipher.update(Crypto.Random.new().read(4))
+    peer_id = cipher.digest()
+    self.debug_print( (2, 'Generated new peer ID: ' + peer_id) )
+    return peer_id
+    
+
+  def generate_store_id(self, public_key=None):
+    """
+    Store IDs are meant to uniquely identify a store/user. They are essentially
+    the RSA public key, but we use use their SHA-256 hash to "flatten" them to
+    a shorter, predictable length.
+    """
+    # Default to using own public key.
+    if not public_key:
+      public_key = self.public_key
+      
+    store_id = hashlib.sha256(public_key.exportKey()).digest()
+    self.debug_print( (2, 'Generated new store ID: ' + store_id) )
+    return store_id
+
+  #######################
+  # Config file methods #
+  #######################
+  
+  def initialize_directory_structure(self):
+    
+    if not os.path.exists(self.own_store_directory):
+      os.makedirs(self.own_store_directory)
+    
+    self.config_directory = os.path.join(self.root_directory, '.config')
+    
+    self.key_directory = os.path.join(self.config_directory, 'keys')
+    
+    self.own_keys_directory = os.path.join(self.key_directory, 'own_keys')
+    if not os.path.exists(self.own_keys_directory):
+      os.makedirs(self.own_keys_directory)
+    
+    self.peer_keys_directory = os.path.join(self.key_directory, 'peer_keys')
+    if not os.path.exists(self.peer_keys_directory):
+      os.makedirs(self.peer_keys_directory)
+      
+    self.store_keys_directory = os.path.join(self.key_directory, 'store_keys')
+    if not os.path.exists(self.store_keys_directory):
+      os.makedirs(self.store_keys_directory)
+    
+    self.stores_directory = os.path.join(self.root_directory, 'stores')
+    if not os.path.exists(self.stores_directory):
+      os.makedirs(self.stores_directory)
+    
+    
+  def initialize_keys(self):
+    self.private_key_file = os.path.join(self.own_keys_directory, 'private_key.pem')
+    if os.path.isfile(self.private_key_file):
+      with open(self.private_key_file, 'r') as f:
+        self.private_key = Crypto.PublicKey.RSA.importKey(f.read())
+    else:
+      self.private_key = Crypto.PublicKey.RSA.generate(2048)
+      with open(self.private_key_file, 'w') as f:
+        f.write(self.private_key.exportKey())
+    
+    # Not sure we actually need to use the public key file...
+    self.public_key_file = os.path.join(self.own_keys_directory, 'public_key.pem')
+    if os.path.isfile(self.public_key_file):
+      with open(self.public_key_file, 'r') as f:
+        self.public_key = Crypto.PublicKey.RSA.importKey(f.read())
+    else:
+      self.public_key = self.private_key.publickey()
+      with open(self.public_key_file, 'w') as f:
+        f.write(self.public_key.exportKey())
+      
+    self.x509_cert_file = os.path.join(self.own_keys_directory, 'x509.pem')
+    if not os.path.isfile(self.x509_cert_file):
+      # Use OpenSSL's CLI to generate an X.509 from the existing RSA private key
+      # Adapted from http://stackoverflow.com/a/12921889 and http://stackoverflow.com/a/12921889
+      subprocess.check_call('openssl req -new -batch -x509 -nodes -days 3650 -key ' +
+                            self.private_key_file +
+                            ' -out ' + self.x509_cert_file,
+                            shell=True)
+          
+
   # TODO: De-uglify
   # FIXME: PyDoc
   # Use a file to permanently store certain metadata.
   def load_metadata_file(self):
+    # Create a null metadata object to update against
+    self._metadata = Metadata(None, None, None, None, None, None, None)
+    
+    self.metadata_file = os.path.join(self.config_directory, 'metadata_file.pickle')
+    self.backup_metadata_file = self.metadata_file + '.bak'
+
     try:
       # Load the metadata file
       if os.path.isfile(self.metadata_file):
@@ -246,54 +357,30 @@ class Peer:
       self.update_metadata(metadata)
 
 
-  def generate_initial_metadata(self):
-    """
-    Generate a peer's important metadata the first time it is instantiated.
-    """
-    peer_id = self.generate_peer_id()
-    store_id = self.generate_store_id()
-    ip_address = None # Automatically set upon running the peer
-    own_revision_data = None # Automatically generated upon running the peer
-    merkel_tree = None # Automatically generated upon running the peer
-    initial_peers = set() # No peers are known
-    aes_key = Crypto.Random.new().read(Crypto.Cipher.AES.block_size)
-    aes_iv = Crypto.Random.new().read(Crypto.Cipher.AES.block_size)
-    
-    # FIXME: Idempotently initialize/ensure personal directory structure here including initial revision number.
-    peer_dict = {peer_id: PeerData(ip_address, {store_id: own_revision_data})}
-    store_dict = {store_id: StoreData(own_revision_data, initial_peers)}
-    
-    # Load the initial values into a `Metadata` object.
-    metadata = Metadata(peer_id, peer_dict, store_id, store_dict, aes_key, aes_iv, merkel_tree)
-    return metadata
-    
+  def get_peer_key_path(self, peer_id):
+    peer_filename = self.compute_safe_filename(peer_id)
+    return os.path.join(self.peer_keys_directory, peer_filename+'.pem')
   
-  def generate_peer_id(self):
-    """
-    Generate a quasi-unique ID for this peer using a hash (SHA-256, which
-    currently has no known collisions) of the owner's public key "salted" with a
-    random number.
-    """
-    peer_unique_string = self.encryption.import_public_key().exportKey() + str(random.SystemRandom().random())
-    peer_id = hashlib.sha256(peer_unique_string).digest()
-    self.debug_print( (2, 'Generated new peer ID: ' + peer_id) )
-    return peer_id
+  def get_peer_key(self, peer_id):
+    with open(self.get_peer_key_path(peer_id), 'r') as f:
+      public_key = Crypto.PublicKey.RSA.importKey(f.read())
+    return public_key  
+
+  def get_store_key_path(self, store_id):
+    store_filename = self.compute_safe_filename(store_id)
+    return os.path.join(self.store_keys_directory, store_filename+'.pem')
+  
+  def get_store_key(self, store_id):
+    with open(self.get_store_key_path(store_id), 'r') as f:
+      public_key = Crypto.PublicKey.RSA.importKey(f.read())
+    return public_key
+  
+  def get_store_path(self, store_id):
+    store_filename = self.compute_safe_filename(store_id)
+    return os.path.join(self.stores_directory, store_filename)
     
-
-  def generate_store_id(self, public_key=None):
-    """
-    Store IDs are meant to uniquely identify a store/user. They are essentially
-    the RSA public key, but we use use their SHA-256 hash to "flatten" them to
-    a shorter, predictable length.
-    """
-    # Default to using own public key.
-    if not public_key:
-      public_key = self.encryption.import_public_key()
-      
-    store_id = hashlib.sha256(public_key.exportKey()).digest()
-    self.debug_print( (2, 'Generated new store ID: ' + store_id) )
-    return store_id
-
+  def compute_safe_filename(self, input_string):
+    return base64.urlsafe_b64encode(input_string)
 
   ######################
   # Metadata accessors #
@@ -356,21 +443,20 @@ class Peer:
   # Trying out weaving a lock through these calls (akin to priority inversion)
   #  so only one thread can access the metadata at a time. Hope it works.
 
-  def update_metadata(self, metadata, lock=False):
+  def update_metadata(self, metadata, lock_acquired=False):
     """
     All updates to a peer's stored metadata occur through this function so
     we can ensure that changes are backed up to primary storage before coming 
     into effect.
     """
+    # Make sure we have the lock before proceeding
+    if not lock_acquired:
+      self.lock.acquire()
+    
     # Only update if necessary.
     if metadata == self.metadata:
       self.debug_print( (2, 'No new metadata; update skipped.') )
       return
-    
-    # Make sure we have the lock before proceeding
-    if not lock:
-      self.lock.acquire()
-      lock = True
     
     # Copy the previous metadata file to the backup location.
     shutil.copyfile(self.metadata_file, self.backup_metadata_file)
@@ -392,8 +478,11 @@ class Peer:
                        (3, 'aes_iv = {}'.format(self.aes_iv)),
                        (4, 'merkel_tree:')] )
     if self.debug_verbosity >= 4:
-      self.merkel_tree.PrintHashList()
+      directory_merkel_tree.print_tree(self.merkel_tree)
     
+    # Release the lock if we personally acquired it
+    if not lock_acquired:
+      self.lock.release()
     
     
 #   # FIXME: Would want similar functionality for server requested associations
@@ -439,14 +528,13 @@ class Peer:
 #     self.update_metadata(metadata)
 
 
-  def record_peer_data(self, peer_id, peer_data, lock=False):
+  def record_peer_data(self, peer_id, peer_data, lock_acquired=False):
     """
     Update the recorded metadata for an individual peer.
     """
     # Make sure we have the lock before proceeding
-    if not lock:
+    if not lock_acquired:
       self.lock.acquire()
-      lock = True
     
     peer_mutual_stores = set(peer_data.store_revisions.keys()).intersection(set(self.store_dict.keys()))
     # Only want to track peers that are associated with a store we're concerned with.
@@ -495,8 +583,12 @@ class Peer:
     # Enact the update.
     peer_dict[peer_id] = PeerData(ip_address, store_revisions)
     metadata = Metadata(self.peer_id, peer_dict, self.store_id, store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
-    self.update_metadata(metadata, lock)
-  
+    self.update_metadata(metadata, True)
+
+    # Release the lock if we personally acquired it
+    if not lock_acquired:
+      self.lock.release()
+      
   
   def learn_metadata_gossip(self, peer_dict, lock=False):
     """
@@ -505,7 +597,6 @@ class Peer:
     # Make sure we have the lock before proceeding
     if not lock:
       self.lock.acquire()
-      lock = True
     
     # Update our metadata on mutual peers as needed.
     mutual_peers = set(peer_dict.keys()).intersection(set(self.peer_dict.keys()))
@@ -517,18 +608,22 @@ class Peer:
       # Stores that both we and the gossip know a peer to be associated with
       peer_mutual_stores = set(peer_dict[peer_id].store_revisions.keys()).intersection(set(self.peer_dict[peer_id].store_revisions.keys()))
       
-      gossip_revisions = [peer_dict[peer_id].store_revisions[s_id] for s_id in peer_mutual_stores]
-      recorded_revisions = [self.peer_dict[peer_id].store_revisions[s_id] for s_id in peer_mutual_stores]
+      gossip_revisions = [peer_dict[peer_id].store_revisions[store_id] for store_id in peer_mutual_stores]
+      recorded_revisions = [self.peer_dict[peer_id].store_revisions[store_id] for store_id in peer_mutual_stores]
       # Compare what the gossip says this peer knows against what we've recorded
-      if (any(self.gt_revision_data(g_rev, r_rev) for g_rev, r_rev in zip(gossip_revisions, recorded_revisions))):
+      if (any(self.gt_revision_data(s_id, g_rev, r_rev) for s_id, g_rev, r_rev in zip(peer_mutual_stores, gossip_revisions, recorded_revisions))):
         # The gossip indicates more recent knowledge of the peer in question than we have
-        self.record_peer_data(peer_id, peer_dict[peer_id], lock)
+        self.record_peer_data(peer_id, peer_dict[peer_id], True)
     
     # Learn new peers associated with our stores of interest.
     unknown_peers = set(peer_dict.keys()).difference(set(self.peer_dict.keys()))
     for peer_id in unknown_peers:
       if set(peer_dict[peer_id].store_revisions.keys()).intersection(set(self.peer_dict.keys())):
-        self.record_peer_data(peer_id, peer_dict[peer_id], lock)
+        self.record_peer_data(peer_id, peer_dict[peer_id], True)
+    
+    # Release the lock if we personally acquired it
+    if not lock:
+      self.lock.release()
     
     
   def update_ip_address(self, lock=False):
@@ -536,7 +631,6 @@ class Peer:
     # Make sure we have the lock before proceeding
     if not lock:
       self.lock.acquire()
-      lock = True
     
     # Create staging copy of data to be changed
     peer_dict = copy.deepcopy(self.peer_dict)
@@ -549,7 +643,11 @@ class Peer:
     
     # Enact the change.
     metadata = Metadata(self.peer_id, peer_dict, self.store_id, self.store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
-    self.update_metadata(metadata, lock)
+    self.update_metadata(metadata, True)
+    
+    # Release the lock if we personally acquired it
+    if not lock:
+      self.lock.release()
     
     
   def update_peer_revision(self, peer_id, store_id, failed=False, lock=None):
@@ -560,7 +658,7 @@ class Peer:
     """
     # Make sure we have the lock before proceeding
     if not lock:
-      lock = threading.Lock()
+      self.lock.acquire()
     
     # Create a copy of the pertinent data in which to stage our changes.
     peer_store_revisions = copy.deepcopy(self.peer_dict[peer_id].store_revisions)
@@ -574,13 +672,17 @@ class Peer:
     
     # Enact the changes
     peer_data = PeerData(self.peer_dict[peer_id].ip_address, peer_store_revisions)
-    self.record_peer_data(peer_id, peer_data, lock)
+    self.record_peer_data(peer_id, peer_data, True)
 
+    # Release the lock if we personally acquired it
+    if not lock:
+      self.lock.release()
+    
     
   def update_store_revision(self, store_id, revision_data, lock=None):
     # Make sure we have the lock before proceeding
     if not lock:
-      lock = threading.Lock()
+      self.lock.acquire()
     
     # Create a copy of the pertinent data in which to stage our changes.
     store_dict = copy.deepcopy(self.store_dict)
@@ -588,7 +690,11 @@ class Peer:
     
     # Enact the change
     metadata = Metadata(self.peer_id, self.peer_dict, self.store_id, store_dict, self.aes_key, self.aes_iv, self.merkel_tree)
-    self.update_metadata(metadata, lock)
+    self.update_metadata(metadata, True)
+    
+    # Release the lock if we personally acquired it
+    if not lock:
+      self.lock.release()
     
     
   def check_store(self):
@@ -597,7 +703,7 @@ class Peer:
     new Merkel tree upon updates.
     """
     # Compute the Merkel tree from scratch.
-    new_merkel_tree = directory_merkel_tree.make_dmt(self.encryption.get_personal_files_loc(), encrypter=self)
+    new_merkel_tree = directory_merkel_tree.make_dmt(self.own_store_directory, encrypter=self)
     if self.merkel_tree == new_merkel_tree:
       return
     
@@ -616,23 +722,23 @@ class Peer:
   # Cryptographic methods #
   #########################
   
-  def record_peer_pubkey(self, peer_id, peer_pubkey):
+  def record_peer_pubkey(self, peer_id, peer_public_key_string):
     """
     Used to record a peer's public key upon first encounter. The key is 
     subsequently used to verify SSL connections and signatures.
     """
-    # Public key should be passed as text, so write out directly to the appropriate file.
-    self.encryption.write_pubkey(peer_id, peer_pubkey)
+    with open(self.get_peer_key_path(peer_id), 'w') as f:
+      f.write(peer_public_key_string)
 
 
-  def record_store_pubkey(self, peer_id, peer_pubkey):
+  def record_store_pubkey(self, store_id, store_public_key_string):
     """
     Used to record a store's public key upon association. The key is 
     subsequently used for signature verification.
     """
     # NOTE: This is identical to the above function for peers, but affords the flexibility to quickly change the implementation later.
-    # Public key should be passed as text, so write out directly to the appropriate file.
-    self.encryption.write_pubkey(peer_id, peer_pubkey)
+    with open(self.get_store_key_path(store_id), 'w') as f:
+      f.write(store_public_key_string)
 
     
   def gt_revision_data(self, store_id, revision_data_1, revision_data_2):
@@ -648,7 +754,6 @@ class Peer:
     if (not revision_data_2) or (not self.verify_revision_data(store_id, revision_data_2)):
       return True
     
-    # FIXME: Figure out proper way to extract revision numbers.
     if revision_data_1.revision_number > revision_data_2.revision_number:
       return True
     else:
@@ -666,12 +771,14 @@ class Peer:
   
   def get_merkel_tree(self, store_id, nonce=None):
     """Get the locally computed Merkel tree for a store."""
-    # Own store
-    if store_id == self.store_id:
-      return self.encryption.get_personal_mt()
-    # Peer's store
+    # Own store without nonce
+    if (store_id == self.store_id) and (not nonce):
+      return self.merkel_tree
+    # Need to compute.
     else:
-      return self.encryption.get_foreign_mt(store_id)
+      # Make the Merkel tree.
+      merkel_tree = directory_merkel_tree.make_dmt(self.get_store_path(store_id), nonce=nonce)
+      return merkel_tree
     
 
   def diff_store_to_merkel_tree(self, store_id, mt_old):
@@ -679,13 +786,15 @@ class Peer:
     Compute the difference between the current contents of the specified store 
     and those indicated by the older, provided Merkel tree.
     """
-    mt_new = self.encryption.get_foreign_mt(store_id)
+    mt_new = directory_merkel_tree.make_dmt(self.get_store_path(store_id))
     
-    updated_files, deleted_files = mt.mt_file_diffs(mt_new, mt_old)
-    return updated_files, deleted_files
+    updated, new, deleted = directory_merkel_tree.compute_tree_changes(mt_new, mt_old)
+    
+    return updated.union(new), deleted
     
   def get_store_hash(self, store_id, nonce=''):
     merkel_tree = directory_merkel_tree.make_dmt(self.get_store_location(store_id), nonce)
+    return merkel_tree.dmt_hash
     
   def verify_sync(self, peer_id, store_id):
     """
@@ -728,36 +837,31 @@ class Peer:
     self.update_store_revision(self.store_id, revision_data)
     
   def sign(self, payload):
-    private_key = self.encryption.import_private_key()
     payload_hash = Crypto.Hash.SHA256(payload)
-    signature = Crypto.Signature.PKCS1_v1_5.new(private_key).sign(payload_hash)
+    signature = Crypto.Signature.PKCS1_v1_5.new(self.private_key).sign(payload_hash)
     return signature
   
   def verify(self, store_id, signature, payload):
-    public_key = self.encryption.import_public_key(store_id)
+    public_key = self.get_store_key(store_id)
     payload_hash = Crypto.Hash.SHA256(payload)
     
     return Crypto.Signature.PKCS1_v1_5.new(public_key).verify(payload_hash, signature)
   
   def encrypt(self, plaintext):
+    # Have to reuse the IV because we're encrypting on the fly and need to be able to compare Merkel trees... vuln?
     cipher = Crypto.Cipher.AES.new(self.aes_key, Crypto.Cipher.AES.MODE_CFB, self.aes_iv)
     ciphertext = self.aes_iv + cipher.encrypt(plaintext)
     return ciphertext
     
   def decrypt(self, ciphertext):
-    cipher = Crypto.Cipher.AES.new(self.aes_key, Crypto.Cipher.AES.MODE_CFB, self.aes_iv)
+    aes_iv = ciphertext[:Crypto.Cipher.AES.block_size]
+    cipher = Crypto.Cipher.AES.new(self.aes_key, Crypto.Cipher.AES.MODE_CFB, aes_iv)
     plaintext = cipher.decrypt(ciphertext)[Crypto.Cipher.AES.block_size:]
     return plaintext
 
   def encrypt_filename(self, filename):
-    # FIXME: Totally untested, cross your fingers.
     encrypted_filename = self.encrypt(filename)
-    
-#     # Just (unsafely) drop illegal characters. A ripoff from http://stackoverflow.com/a/7406369
-#     keepcharacters = (' ','.','_')
-#     safely_encrypted_filename = "".join(c for c in encrypted_filename if c.isalnum() or c in keepcharacters).rstrip()
-    safely_encrypted_filename = base64.urlsafe_b64encode(encrypted_filename)
-    return safely_encrypted_filename
+    return self.compute_safe_filename(encrypted_filename)
   
    
   #########################
@@ -794,13 +898,13 @@ class Peer:
     
     # Consider stores which the peer server has a later revision for.
     for store_id in mutual_stores:
-      if self.gt_revision_data(peer_store_revisions[store_id], self.store_dict[store_id].revision_data):
+      if self.gt_revision_data(store_id, peer_store_revisions[store_id], self.store_dict[store_id].revision_data):
         potential_stores.add(store_id)
         
     # If the peer server doesn't have any updates for us, consider updates we have for them.
     if not potential_stores:
       for store_id in mutual_stores:
-        if self.gt_revision_data(self.store_dict[store_id].revision_data, peer_store_revisions[store_id]):
+        if self.gt_revision_data(store_id, self.store_dict[store_id].revision_data, peer_store_revisions[store_id]):
           potential_stores.add(store_id)
     
     # If we are both at the same revision for all mutual stores, we will verify one another's revision for some mutual store.
@@ -827,7 +931,7 @@ class Peer:
     for peer_id in self.peer_dict.keys():
       peer_store_revisions = self.peer_dict[peer_id].store_revisions
       for store_id in peer_store_revisions:
-        if self.gt_revision_data(peer_store_revisions[store_id], self.store_dict[store_id].revision_data):
+        if self.gt_revision_data(store_id, peer_store_revisions[store_id], self.store_dict[store_id].revision_data):
           potential_peers.add(peer_id)
           # No need to check the revision data for this peer's other synced stores
           break
@@ -837,7 +941,7 @@ class Peer:
       for peer_id in self.peer_dict.keys():
         peer_store_revisions = self.peer_dict[peer_id].store_revisions
         for store_id in peer_store_revisions:
-          if self.gt_revision_data(self.store_dict[store_id].revision_data, peer_store_revisions[store_id]):
+          if self.gt_revision_data(store_id, self.store_dict[store_id].revision_data, peer_store_revisions[store_id]):
             potential_peers.add(peer_id)
             # No need to check the revision data for this peer's other synced stores
             break
@@ -869,11 +973,11 @@ class Peer:
     peer_revision = self.peer_dict[peer_id].store_revisions[store_id]
     
     # Communicating peer has a newer revision of the store than us.
-    if self.gt_revision_data(peer_revision, our_revision):
+    if self.gt_revision_data(store_id, peer_revision, our_revision):
       return 'receive'
     
     # We have a newer revision of the store than the communicating peer.
-    if self.gt_revision_data(our_revision, peer_revision):
+    if self.gt_revision_data(store_id, our_revision, peer_revision):
       return 'send'
     
     # If neither the communicating peer nor we have a valid revision for the store, raise an exception.
@@ -896,19 +1000,25 @@ class Peer:
       # Update/create a file.
       if (message_id == message_ids['update_file_msg']):
         relative_path, file_contents = self.unpickle('update_file_msg', pickled_payload)
-        full_path = os.path.join(self.encryption.foreign_files_loc(store_id),relative_path)
+        full_path = os.path.join(self.get_store_path(store_id),relative_path)
         
-        # Write the file's new contents creating new directories as needed.
+        # Create new directories as needed.
         # FIXME: As currently implemented, an IO error here would cause an end to the sync and an inconsistent store.
         if not os.path.exists(os.path.dirname(full_path)):
           os.makedirs(os.path.dirname(full_path))
-        with file.open(full_path,'w') as f:
-          f.write(file_contents)
-      
+        # Directory
+        if relative_path[-1] == '/':
+          if not os.path.exists(full_path):
+            os.makedirs(full_path)   
+        # File.
+        else:
+          with file.open(full_path,'w') as f:
+            f.write(file_contents)
+        
       # Delete a file or directory.
       elif (message_id == message_ids['delete_file_msg']):
         relative_path = self.unpickle('update_file_msg', pickled_payload)
-        full_path = os.path.join(self.encryption.foreign_files_loc(store_id),relative_path)
+        full_path = os.path.join(self.get_store_path(store_id),relative_path)
         
         # FIXME: Again, an IO error here would cause an end to the sync and an inconsistent store.
         if os.path.isfile(full_path):
@@ -944,7 +1054,7 @@ class Peer:
     # Send the sync receiver each file that has changed
     for relative_path in updated_files:
       # Read in the file's contents
-      with file.open(os.path.join(self.encryption.foreign_files_loc(store_id),relative_path),'r') as f:
+      with file.open(os.path.join(self.get_store_path(store_id),relative_path),'r') as f:
         file_contents = f.read()
       
       # Send the file updates to the communicating peer.
@@ -1005,47 +1115,47 @@ class Peer:
     skt.send(struct.pack('!I', len(pickled_message))+pickled_message)
     
   def send_handshake_req(self, skt):
-    message_id = self.message_ids['handshake_req']
+    message_id = message_ids['handshake_req']
     message_data = (self.peer_id, self.peer_dict)
     self.send(skt, message_id, message_data)
     
   def send_sync_req(self, skt, store_id):
-    message_id = self.message_ids['sync_req']
+    message_id = message_ids['sync_req']
     message_data = store_id
     self.send(skt, message_id, message_data)
     
   def send_merkel_tree_msg(self, skt, store_id):
-    message_id = self.message_ids['merkel_tree_msg']
+    message_id = message_ids['merkel_tree_msg']
     message_data = self.get_merkel_tree(store_id)
     self.send(skt, message_id, message_data)
     
   def send_update_file_msg(self, skt, relative_path, file_contents):
-    message_id = self.message_ids['update_file_msg']
+    message_id = message_ids['update_file_msg']
     message_data = (relative_path, file_contents)
     self.send(skt, message_id, message_data)
     
   def send_delete_file_msg(self, skt, relative_path):
-    message_id = self.message_ids['delete_file_msg']
+    message_id = message_ids['delete_file_msg']
     message_data = relative_path
     self.send(skt, message_id, message_data)
     
   def send_sync_complete_msg(self, skt):
-    message_id = self.message_ids['sync_complete_msg']
+    message_id = message_ids['sync_complete_msg']
     message_data = None
     self.send(skt, message_id, message_data)
     
   def send_verify_sync_req(self, skt, nonce):
-    message_id = self.message_ids['verify_sync_req']
+    message_id = message_ids['verify_sync_req']
     message_data = nonce
     self.send(skt, message_id, message_data)
         
   def send_verify_sync_resp(self, skt, verification_hash):
-    message_id = self.message_ids['verify_sync_resp']
+    message_id = message_ids['verify_sync_resp']
     message_data = verification_hash
     self.send(skt, message_id, message_data)
         
   def send_disconnect_req(self, skt, disconnect_message):
-    message_id = self.message_ids['disconnect_req']
+    message_id = message_ids['disconnect_req']
     message_data = disconnect_message
     self.send(skt, message_id, message_data)    
 
@@ -1072,6 +1182,7 @@ class Peer:
     # Retrieve the message body.
     while length_received < (length + header_size):
       message_buffer += skt.recv((length + header_size) - length_received)
+      length_received = len(message_buffer)
     
     # Message has incorrect length.
     if len(message_buffer) != (length + header_size):
@@ -1089,7 +1200,7 @@ class Peer:
     Receive a message, automatically handling situations where the message was 
     not of the type expected.
     """
-    expected_message_id = self.message_ids[expected_message_type]
+    expected_message_id = message_ids[expected_message_type]
     
     message_id, pickled_payload = self.receive(skt)
     if message_id != expected_message_id:
@@ -1100,7 +1211,7 @@ class Peer:
     
     
   def handle_unexpected_message(self, message_id, pickled_payload):
-    if message_id == self.message_ids['disconnect_req']:
+    if message_id == message_ids['disconnect_req']:
       # Unpickle message data from `'disconnect_req'` message type.
       disconnect_message = self.unpickle('disconnect_req', pickled_payload)
       self.debug_print( [(1, 'Peer requested disconnect, reporting the following:'),
@@ -1110,7 +1221,7 @@ class Peer:
 
 
   def unpickle(self, message_type, pickled_payload):
-    return self.unpicklers[message_type](self, pickled_payload)
+    return unpicklers[message_type](self, pickled_payload)
 
 
   def unpickle_handshake_req(self, pickled_payload):
@@ -1187,21 +1298,21 @@ class Peer:
     # Idempotency. Also, might've already learned about this peer through gossip about a mutual store. 
     if peer_id not in self.peer_dict.keys():
       # Copy the public key and associate it to the specified peer.
-      shutil.copyfile(public_key_file, self.encryption.public_foreign_key_loc(peer_id))
+      shutil.copyfile(public_key_file, self.get_peer_key_path(peer_id))
     
     # Get the key object for the public key and generate the corresponding store ID
-    public_key = self.encryption.import_public_key(peer_id)
+    public_key = self.get_peer_key(peer_id)
     # Calculate the store ID that corresponds to this public key.
     store_id = self.generate_store_id(public_key)
 
     # Idempotency.
     if store_id not in self.store_dict.keys():
       # Store another copy of the key assigned to its store ID.
-      shutil.copyfile(public_key_file, self.encryption.public_foreign_key_loc(store_id))
+      shutil.copyfile(public_key_file, self.get_store_key_path(store_id))
       
-      # Initialize the directory structure to back up this store.
-      # FIXME: Need to thoroughly examine the effects of setting the `validation_tup` argument to `None`.
-      self.encryption.init_remote(store_id, None)
+      # Create the store directory.
+      if not os.path.isdir(self.get_store_path(store_id)):
+        os.makedirs(self.get_store_path(store_id))
       
       # Create a copy of our `store_dict` for staging changes and insert the new metadata.
       store_dict = copy.deepcopy(self.store_dict)
@@ -1268,7 +1379,7 @@ class Peer:
     
     # Lookup by value, an abuse of the dictionary type...
     # FIXME: Use `iteritems()` instead of `items()`
-    message_type = [m_type for m_type, m_id in self.message_ids.items() if m_id == message_id][0]
+    message_type = [m_type for m_type, m_id in message_ids.items() if m_id == message_id][0]
     
     # Allow this message type's unpickler the opportunity to debug print a description of the message.
     self.unpickle(message_type, pickled_payload)
@@ -1344,8 +1455,8 @@ class Peer:
 
 def test_ssl():
   print 'Executing peer connection test.'
-  client = Peer(debug_verbosity=1, debug_prefix='Peer Client:')
-  server = Peer(debug_verbosity=1, debug_prefix='Peer Server:')
+  client = Peer(debug_verbosity=1, debug_preamble='Peer Client:')
+  server = Peer(debug_verbosity=1, debug_preamble='Peer Server:')
   
   t1 = threading.Thread(target=server.test_server_ssl, args=())
   t2 = threading.Thread(target=client.test_client_ssl, args=('localhost',))
@@ -1357,8 +1468,8 @@ def test_ssl():
 
 def test_handshake():
   print 'Executing peer handshake test.'
-  client = Peer(debug_verbosity=5, debug_prefix='Peer Client:')
-  server = Peer(debug_verbosity=5, debug_prefix='Peer Server:')
+  client = Peer(debug_verbosity=5, debug_preamble='Peer Client:')
+  server = Peer(debug_verbosity=5, debug_preamble='Peer Server:')
   
   t1 = threading.Thread(target=server.test_server_handshake, args=())
   t2 = threading.Thread(target=client.test_client_handshake, args=('localhost',))
