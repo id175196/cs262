@@ -14,7 +14,7 @@ class ClientEncryption:
   ### functions to get foreign file paths
   
   # take a UUID and return the location for the private key file
-  def private_foreign_key_loc(self, uuid):'
+  def private_foreign_key_loc(self, uuid):
   """Get a foreign private key location given a UUID.
      Generally used only for testing purposes."""
       return os.path.join(self.directory, uuid, self.backup_path, "private_key.ppk")
