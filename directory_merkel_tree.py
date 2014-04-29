@@ -78,12 +78,25 @@ def print_tree(tree):
     print 'File hash = {}'.format(tree.dmt_hash)
 
 def compute_tree_changes(dmt_new, dmt_old, directory_path=''):
-  # Base cases:
-  mutual_filesystem_items   = set(dmt_new.children.keys()).intersection(set(dmt_old.children.keys()))
-  new_filesystem_items      = set(dmt_new.children.keys()).difference(set(dmt_old.children.keys()))
-  deleted_filesystem_items  = set(dmt_old.children.keys()).difference(set(dmt_new.children.keys()))
-  
   updated, new, deleted = set(), set(), set()
+  # Base cases:
+  # Both files or empty directories
+  if (not dmt_new.children) and (not dmt_old.children):
+    return updated, new, deleted
+  # New directory
+  elif not not dmt_old.children:
+    mutual_filesystem_items = set()
+    new_filesystem_items = set(dmt_new.children.keys())
+    deleted_filesystem_items = set()
+  elif not dmt_new.children:
+    mutual_filesystem_items = set()
+    new_filesystem_items = set()
+    deleted_filesystem_items = set(dmt_old.children.keys())
+  else:
+    mutual_filesystem_items   = set(dmt_new.children.keys()).intersection(set(dmt_old.children.keys()))
+    new_filesystem_items      = set(dmt_new.children.keys()).difference(set(dmt_old.children.keys()))
+    deleted_filesystem_items  = set(dmt_old.children.keys()).difference(set(dmt_new.children.keys()))
+  
   
   # Compile the set of updated files and directories, as well as any other changes within subdirectories.
   for filesystem_item in mutual_filesystem_items:
@@ -149,6 +162,9 @@ class DirectoryMerkelTree:
     self.children = children
   
   def __eq__(self, other):
+    if not other:
+      return False
+    
     if type(other) is not type(self):
       raise TypeError('{} is not equal to {}'.format(type(self), type(other)))
     
