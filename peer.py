@@ -158,7 +158,15 @@ class Peer:
                        (2, 'client_peer_id = {}'.format([client_peer_id]))] )
     
     # FIXME: For known client peers, will want to verify the public key provided to the SSL.
-    
+
+    # TODO: Should only ask for peer's public key when it's unknown (?)
+    # Receive and record the peer client's public key file.
+    pickled_payload = self.receive_expected_message(skt_ssl, 'public_key_msg')
+    public_key_file_contents = self.unpickle('public_key_msg', pickled_payload)
+    if not os.path.isfile(self.get_peer_key_path(client_peer_id)):
+      with open(self.get_peer_key_path(client_peer_id), 'w') as f:
+        f.write(public_key_file_contents)
+
     # The peer client's knowledge of itself is at least as up to date as ours, so attempt to get up to date.
     self.record_peer_data(client_peer_id, client_peer_dict[client_peer_id])
     
@@ -203,6 +211,10 @@ class Peer:
     pickled_payload = self.receive_expected_message(skt_ssl, 'handshake_req')
     (server_peer_id, server_peer_dict) = self.unpickle('handshake_req', pickled_payload)
     self.debug_print( (1, 'Peer server handshake request received.'))
+
+    # FIXME
+    # Always send public key file to server
+    self.send_public_key_msg(skt_ssl)
     
     # The peer server's knowledge of itself is at least as up to date as ours, so trust what it says.
     self.record_peer_data(server_peer_id, server_peer_dict[server_peer_id])
@@ -1768,7 +1780,8 @@ message_ids = {'handshake_req'     : 0,
                'sync_complete_msg' : 5,
                'verify_sync_req'   : 6,
                'verify_sync_resp'  : 7,
-               'disconnect_req'    : 8
+               'disconnect_req'    : 8,
+               'public_key_msg'    : 9    # FIXME: A quick hack; seriously fix
                }
 
 unpicklers = {'handshake_req'     : Peer.unpickle_handshake_req,
@@ -1779,7 +1792,8 @@ unpicklers = {'handshake_req'     : Peer.unpickle_handshake_req,
               'sync_complete_msg' : Peer.unpickle_sync_complete_msg,
               'verify_sync_req'   : Peer.unpickle_verify_sync_req, 
               'verify_sync_resp'  : Peer.unpickle_verify_sync_resp,
-              'disconnect_req'    : Peer.unpickle_delete_file_msg
+              'disconnect_req'    : Peer.unpickle_delete_file_msg,
+              'public_key_msg'    : Peer.unpickle_public_key_msg
               }
 
 def main():
