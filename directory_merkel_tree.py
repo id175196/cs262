@@ -3,6 +3,8 @@ from os import path
 from os import listdir
 from os.path import isdir, isfile
 from hashlib import sha256
+import base64
+
 
 empty_directory_hash = sha256('empty directory').digest()
 
@@ -65,9 +67,12 @@ def make_dmt(root_directory=os.getcwd(), nonce='', encrypter=None):
   return dmt_tree
 
 def print_tree(tree):
+  if not tree:
+    print None
+    return
   
   if tree.children:
-    print 'Directory hash = {}'.format(tree.dmt_hash)
+    print 'Directory hash = {}'.format(base64.urlsafe_b64encode(tree.dmt_hash))
     print 'Contents:'
     for name, subtree in tree.children.iteritems():
       print
@@ -75,7 +80,7 @@ def print_tree(tree):
       print_tree(subtree)
   
   else:
-    print 'File hash = {}'.format(tree.dmt_hash)
+    print 'File hash = {}'.format(base64.urlsafe_b64encode(tree.dmt_hash))
 
 def compute_tree_changes(dmt_new, dmt_old, directory_path=''):
   updated, new, deleted = set(), set(), set()
@@ -84,7 +89,7 @@ def compute_tree_changes(dmt_new, dmt_old, directory_path=''):
   if (not dmt_new.children) and (not dmt_old.children):
     return updated, new, deleted
   # New directory
-  elif not not dmt_old.children:
+  elif not dmt_old.children:
     mutual_filesystem_items = set()
     new_filesystem_items = set(dmt_new.children.keys())
     deleted_filesystem_items = set()
