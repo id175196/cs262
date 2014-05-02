@@ -361,7 +361,9 @@ class Peer:
   #######################
   
   def initialize_directory_structure(self):
-    
+    """
+    Produce the directory structure to store keys, stores, and config files.
+    """
     if not os.path.exists(self.own_store_directory):
       os.makedirs(self.own_store_directory)
     
@@ -387,6 +389,10 @@ class Peer:
     
     
   def initialize_keys(self):
+    """
+    Produce public and private keys if they don't exist. Then, load the public
+    and private keys.
+    """
     self.private_key_file = os.path.join(self.own_keys_directory, 'private_key.pem')
     if os.path.isfile(self.private_key_file):
       with open(self.private_key_file, 'r') as f:
@@ -420,6 +426,11 @@ class Peer:
   # FIXME: PyDoc
   # Use a file to permanently store certain metadata.
   def load_metadata_file(self):
+    """
+    Load the metadata into the workspace. If neither a metadata file nor
+    backup file exists, then produce a metadata file. Finally, update
+    the metadata.
+    """
     # Create a null metadata object to update against
     self._metadata = Metadata(None, None, None, None, None, None, None)
     
@@ -457,6 +468,9 @@ class Peer:
 
 
   def get_peer_key_path(self, peer_id):
+    """
+    Return the file path for the public key given the peer id.
+    """
     if peer_id == self.peer_id:
       key_path = self.public_key_file
     else:
@@ -465,6 +479,9 @@ class Peer:
     return key_path
   
   def get_peer_key(self, peer_id):
+    """
+    Return a public key given the peer id.
+    """
     if peer_id == self.peer_id:
       return self.public_key
     
@@ -473,6 +490,9 @@ class Peer:
     return public_key  
 
   def get_store_key_path(self, store_id):
+    """
+    Return the file path for the public key given the store id.
+    """
     if store_id == self.store_id:
       key_path = self.public_key_file
     else:
@@ -481,6 +501,9 @@ class Peer:
     return key_path
   
   def get_store_key(self, store_id):
+    """
+    Return a public key given the peer id.
+    """
     if store_id == self.store_id:
       return self.public_key
     
@@ -553,6 +576,9 @@ class Peer:
     return self._metadata
 
   def get_revision_data(self, peer_id, store_id):
+    """
+    Return the revision data given a peer id and store id.
+    """
     revision_data = self.peer_dict[peer_id].store_revisions[store_id]
     return revision_data
 
@@ -838,6 +864,9 @@ class Peer:
     
     
   def update_own_store_revision(self, store_id, revision_data, lock=None):
+    """
+    Update the store dictionary for a given store id with new revision data.
+    """
     # Make sure we have the lock before proceeding
 #     if not lock:
 #       self.lock.acquire()
@@ -894,6 +923,9 @@ class Peer:
     
     
   def store_put_item(self, store_id, relative_path, file_contents=None):
+    """
+    Store data to the gen relative path for a store id.
+    """
     if relative_path[-1] == '/':
       isdir = True
     else:
@@ -933,6 +965,9 @@ class Peer:
         f.write(file_contents)
         
   def store_delete_item(self, store_id, relative_path):
+    """
+    Delete data at the given relative path for a store id
+    """
     if store_id == self.store_id:
       # Undo the path encryption done while creating our Merkel tree.
       relative_path = self.decrypt_own_store_path(relative_path)
@@ -953,6 +988,9 @@ class Peer:
    
 
   def decrypt_own_store_path(self, encrypted_relative_path):
+    """
+    Take a given encrypted relative path and decrypt it directory by directory
+    """
     print_tuples = [ (1, 'DEBUG: Decrypting path: {}'.format(encrypted_relative_path)) ]
     
     encrypted_path_elements = encrypted_relative_path.split('/')
@@ -966,6 +1004,10 @@ class Peer:
 
 
   def store_get_item_contents(self, store_id, relative_path):
+    """
+    Take a store id and relative path and return the contents of the file.
+    Make sure contents are encrypted if they are you own files.
+    """
     # Directory
     if relative_path[-1] == '/':
       return None
@@ -1067,6 +1109,10 @@ class Peer:
   
   
   def sign_revision(self, revision_number, store_hash):
+    """
+    Take a revision number and store hash and return a RevisionData object
+    containing a revision number, store hash, and signature for the two.
+    """
     # Thoroughly checked.
     
     # Pickle and sign the revision data
@@ -1077,7 +1123,9 @@ class Peer:
   
   
   def get_merkel_tree(self, store_id, nonce=None):
-    """Get the locally computed Merkel tree for a store."""
+    """
+    Get the locally computed Merkel tree for a store.
+    """
     # Own store without nonce
     if (store_id == self.store_id) and (not nonce):
       return self.merkel_tree
@@ -1104,6 +1152,9 @@ class Peer:
     return updated.union(new), deleted
     
   def get_store_hash(self, store_id, nonce=''):
+    """
+    Get the hash for a given store id.
+    """
     merkel_tree = self.get_merkel_tree(store_id, nonce)
     return merkel_tree.dmt_hash
     
@@ -1138,7 +1189,9 @@ class Peer:
       return False
       
   def increment_revision(self):
-    """Create and record new revision data for the peer's own store."""
+    """
+    Create and record new revision data for the peer's own store.
+    """
     
     self.debug_print( (1, 'Incrementing the local store\'s revision data.') )
     
@@ -1154,6 +1207,9 @@ class Peer:
     self.update_own_store_revision(self.store_id, revision_data)
     
   def sign(self, payload):
+    """
+    Produce a signature for the given paylod using a user's private region.
+    """
     # Thoroughly checked.
     
     payload_hash = Crypto.Hash.SHA256.new(payload)
@@ -1161,6 +1217,10 @@ class Peer:
     return signature
   
   def verify(self, store_id, signature, payload):
+    """
+    Given a store id, a payload, and a signature for a payload, verify the
+    signature.
+    """
     # Thoroughly checked.
     
     public_key = self.get_store_key(store_id)
@@ -1169,22 +1229,35 @@ class Peer:
     return Crypto.Signature.PKCS1_v1_5.new(public_key).verify(payload_hash, signature)
   
   def encrypt(self, plaintext):
+    """
+    Given a plaintext, use personal AES key to encrypt the plaintext.
+    """
     # Have to reuse the IV because we're encrypting on the fly and need to be able to compare Merkel trees... vuln?
     cipher = Crypto.Cipher.AES.new(self.aes_key, Crypto.Cipher.AES.MODE_CFB, self.aes_iv)
     ciphertext = self.aes_iv + cipher.encrypt(plaintext)
     return ciphertext
     
   def decrypt(self, ciphertext):
+    """
+    Decrypt a ciphertext given using the personal AES key.
+    """
     aes_iv = ciphertext[:Crypto.Cipher.AES.block_size]
     cipher = Crypto.Cipher.AES.new(self.aes_key, Crypto.Cipher.AES.MODE_CFB, aes_iv)
     plaintext = cipher.decrypt(ciphertext)[Crypto.Cipher.AES.block_size:]
     return plaintext
 
   def encrypt_filename(self, filename):
+    """
+    Take a filename and return an encryption the filename safe to use.
+    """
     encrypted_filename = self.encrypt(filename)
     return self.compute_safe_filename(encrypted_filename)
   
   def decrypt_filename(self, safe_encrypted_filename):
+    """
+    Take a safe encrypted filename and return the original filename from which
+    the encrypted filename was produced.
+    """
     encrypted_filename = base64.urlsafe_b64decode(safe_encrypted_filename)
     filename = self.decrypt(encrypted_filename)
     return filename
@@ -1194,6 +1267,9 @@ class Peer:
   #########################
   
   def connect_to_peer(self, peer_id, timeout=5):
+    """
+    Connect to a peer given a peer id and return the connection.
+    """
     # TODO: Raises `KeyError` exception on invalid UUID.
     peer_ip = self.peer_dict[peer_id].ip_address
     # FIXME: Want to verify peer server's public key
@@ -1204,6 +1280,9 @@ class Peer:
   
   
   def create_listening_socket(self, timeout=5):
+    """
+    Produce a socket to listen to other peers attempting to connect.
+    """
     skt = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     skt.settimeout(timeout)
     skt.bind(('', self.listening_port))
@@ -1325,7 +1404,9 @@ class Peer:
 
 
   def sync_receive(self, skt, sender_peer_id, sync_store_id):
-    """Conduct a sync as the receiving party."""
+    """
+    Conduct a sync as the receiving party.
+    """
     # Submit our Merkel tree for the store so the sync sender can identify which files require modification.
     merkel_tree = self.get_merkel_tree(sync_store_id)
     self.debug_print( [(1, 'Sending Merkel tree to sync sender.'),
@@ -1383,7 +1464,9 @@ class Peer:
     
     
   def sync_send(self, skt, receiver_peer_id, sync_store_id):
-    """Conduct a sync as the sending party."""
+    """
+    Conduct a sync as the sending party.
+    """
     # Receive the sync receiver's Merkel tree for the store.
     self.debug_print( (2, 'Waiting for Merkel tree from sync receiver.') )
     pickled_payload = self.receive_expected_message(skt, 'merkel_tree_msg')
@@ -1424,7 +1507,9 @@ class Peer:
     
 
   def sync_check(self, skt, sync_peer_id, sync_store_id):
-    """Verify the other peer's store data."""
+    """
+    Verify the other peer's store data.
+    """
     # Generate a nonce for verifying the peer's store.
     generated_nonce = str(random.SystemRandom().random())
     self.debug_print( [(1, 'Sending sync verification request to peer.'),
@@ -1472,57 +1557,100 @@ class Peer:
   ############################
   
   def send(self, skt, message_id, message_data):
+    """
+    given a secure connection, message identification sting, and message data,
+    pickle the data into a serializable format, and send the resulting data
+    over the secure connection.
+    """
     pickled_payload = cPickle.dumps(message_data)
     message_body = (message_id, pickled_payload)
     pickled_message = cPickle.dumps(message_body)
     skt.send(struct.pack('!I', len(pickled_message))+pickled_message)
     
   def send_handshake_msg(self, skt):
+    """
+    Send a handshake message which containing the personal peer id and
+    dictionary of other known peers.
+    """
     message_id = message_ids['handshake_msg']
     message_data = (self.peer_id, self.peer_dict)
     self.send(skt, message_id, message_data)
     
   def send_sync_req(self, skt, store_id):
+    """
+    Given a secure connection and store id, send a request to
+    secure the given store id.
+    """
     message_id = message_ids['sync_req']
     message_data = store_id
     self.send(skt, message_id, message_data)
     
   def send_merkel_tree_msg(self, skt, store_id, merkel_tree):
+    """
+    Given a secure connection, store id, and Merkle tree, send the Merkle tree
+    over the secure connection.
+    """
     message_id = message_ids['merkel_tree_msg']
     message_data = merkel_tree
     self.send(skt, message_id, message_data)
     
   def send_update_file_msg(self, skt, relative_path, file_contents):
+    """
+    Given a secure connection, relative path, and file contents, send a the
+    file and file contents over the secure connection.
+    """
     message_id = message_ids['update_file_msg']
     message_data = (relative_path, file_contents)
     self.send(skt, message_id, message_data)
     
   def send_delete_file_msg(self, skt, relative_path):
+    """
+    Given a secure connection and a relative path, send a request to delete the
+    file at the given path.
+    """
     message_id = message_ids['delete_file_msg']
     message_data = relative_path
     self.send(skt, message_id, message_data)
     
   def send_sync_complete_msg(self, skt):
+    """
+    Given a secure message, send a message signifying the completion of synced
+    data.
+    """
     message_id = message_ids['sync_complete_msg']
     message_data = None
     self.send(skt, message_id, message_data)
     
   def send_verify_sync_req(self, skt, nonce):
+    """
+    Given a secure connection and noce, send a request to verigy a synch
+    with a salted Merkle tree hash.
+    """
     message_id = message_ids['verify_sync_req']
     message_data = nonce
     self.send(skt, message_id, message_data)
         
   def send_verify_sync_resp(self, skt, verification_hash):
+    """
+    Respond to a requested synch verification with a given verification hash.
+    """
     message_id = message_ids['verify_sync_resp']
     message_data = verification_hash
     self.send(skt, message_id, message_data)
         
   def send_disconnect_req(self, skt, disconnect_message):
+    """
+    Send a request to disconnect over a given secure connection as well as a
+    given disconnect message.
+    """
     message_id = message_ids['disconnect_req']
     message_data = disconnect_message
     self.send(skt, message_id, message_data)    
 
   def send_public_key_msg(self, skt):
+    """
+    send the public key over a given secure connection.
+    """
     message_id = message_ids['public_key_msg']
     message_data = self.public_key.exportKey()
     self.send(skt, message_id, message_data)    
@@ -1579,6 +1707,11 @@ class Peer:
     
     
   def handle_unexpected_message(self, message_id, pickled_payload):
+    """
+    Respond to an unexpected message id and payload, currently through
+    either responding to a disconnect request or printing the unknown
+    message.
+    """
     if message_id == message_ids['disconnect_req']:
       # Unpickle message data from `'disconnect_req'` message type.
       disconnect_message = self.unpickle('disconnect_req', pickled_payload)
@@ -1589,10 +1722,16 @@ class Peer:
 
 
   def unpickle(self, message_type, pickled_payload):
+    """
+    unpickle a payload according to the message type.
+    """
     return unpicklers[message_type](self, pickled_payload)
 
 
   def unpickle_handshake_msg(self, pickled_payload):
+    """
+    Unpickle a pickled (serialized) payload.
+    """
     (peer_id, peer_dict) = cPickle.loads(pickled_payload)
 #     self.debug_print( [(1, 'Unpickled a \'handshake_msg\' message.'),
 #                        (2, 'peer_id = {}'.format([peer_id])),
@@ -1603,6 +1742,9 @@ class Peer:
 
 
   def unpickle_sync_req(self, pickled_payload):
+    """
+    Unpickle a pickled (serialized) synch request.
+    """
     store_id = cPickle.loads(pickled_payload)
 #     self.debug_print( [(1, 'Unpickled a \'sync_req\' message.'),
 #                        (2, 'store_id = {}'.format([store_id]))] )
@@ -1610,6 +1752,9 @@ class Peer:
     return store_id
 
   def unpickle_merkel_tree_msg(self, pickled_payload):
+    """
+    Unpickle a pickled (serialized) Merkle tree.
+    """
     merkel_tree = cPickle.loads(pickled_payload)
 #     self.debug_print( [(1, 'Unpickled a \'merkel_tree_msg\' message.'),
 #                        (4, 'merkel_tree:')] )
@@ -1620,6 +1765,9 @@ class Peer:
     return merkel_tree
   
   def unpickle_update_file_msg(self, pickled_payload):
+    """
+    Unpickle a pickled (serialized) path and contents.
+    """
     relative_path, file_contents = cPickle.loads(pickled_payload)
 #     self.debug_print( [(1, 'Unpickled a \'update_file_msg\' message.'),
 #                        (2, 'relative_path = {}'+relative_path),
@@ -1629,6 +1777,9 @@ class Peer:
     return relative_path, file_contents
    
   def unpickle_delete_file_msg(self, pickled_payload):
+    """
+    Unpickle a pickled (serialized) path.
+    """
     relative_path = cPickle.loads(pickled_payload)
 #     self.debug_print( [(1, 'Unpickled a \'delete_file_msg\' message.'),
 #                        (2, 'relative_path = '+relative_path)] )
@@ -1636,10 +1787,16 @@ class Peer:
     return relative_path
 
   def unpickle_sync_complete_msg(self, pickled_payload):
+    """
+    Do nothing
+    """
 #     self.debug_print( (1, 'Unpickled a (empty) \'sync_complete_msg\' message.') )
     return
   
   def unpickle_verify_sync_req(self, pickled_payload):
+    """
+    Unpickle a pickled (serialized) nonce from a verify synch request 
+    """
     nonce = cPickle.loads(pickled_payload)
 #     self.debug_print( [(1, 'Unpickled a \'verify_sync_req\' message.'),
 #                        (3, 'nonce = {}'.format(nonce))] )
@@ -1648,6 +1805,9 @@ class Peer:
 
 
   def unpickle_verify_sync_resp(self, pickled_payload):
+    """
+    Unpickle a pickled (serialized) verification hash.
+    """
     verification_hash = cPickle.loads(pickled_payload)
 #     self.debug_print( [(1, 'Unpickled a \'verify_sync_resp\' message.'),
 #                        (3, 'verification_hash = {}'.format([verification_hash]))] )
@@ -1655,6 +1815,9 @@ class Peer:
     return verification_hash
   
   def unpickle_public_key_msg(self, pickled_payload):
+    """
+    Unpickle a pickled (serialized) public key.
+    """
     public_key_file_contents = cPickle.loads(pickled_payload)
 #     self.debug_print( [(1, 'Unpickled a \'public_key_msg\' message.'),
 #                        (3, 'public_key_file_contents = {}'.format([public_key_file_contents]))] )
@@ -1778,6 +1941,10 @@ class Peer:
 
 
   def debug_print_bad_message(self, message_id, pickled_payload):
+    """
+    Print an unexpected (or bad) message to understand why the bad message came
+    about.
+    """
     self.debug_print( (1, 'Unexpected message received.'))
     
     # Lookup by value, an abuse of the dictionary type...
@@ -1793,6 +1960,9 @@ class Peer:
   #########
   
   def test_client_ssl(self, peer_ip):
+    """
+    Test a client connection and send message across.
+    """
     # FIXME: This modifies the metadata file, might not want such mangling
     self.record_peer_ip(-1, peer_ip)
     s = self.connect_to_peer(-1)
@@ -1802,6 +1972,10 @@ class Peer:
     s.close()
     
   def test_server_ssl(self):
+    """
+    Test a server connection, print received message both encrypted and
+    decrypted, then close connection.
+    """
     skt_listener = self.create_listening_socket()
     skt_raw, _ = skt_listener.accept()
     print 'Peer Server: A peer is attempting to connect'
@@ -1816,6 +1990,7 @@ class Peer:
     
 
   def test_client_handshake(self, peer_ip):
+    """Test a connection between a peer and peer ip address."""
     # Back up the existing metadata.
     metadata_backup = self.metadata
     
@@ -1840,6 +2015,7 @@ class Peer:
 
    
   def test_server_handshake(self):
+    """Test a handshake for a peer listening for peers."""
     skt_listener = self.create_listening_socket()
     skt_listener.listen(1) # FIXME: Will need to deal with multiple peer clients eventually
     skt_raw, (peer_ip, _) = skt_listener.accept()
@@ -1856,6 +2032,9 @@ class Peer:
     
 
 def test_ssl():
+  """
+  test peer connection test between a peer and Server.
+  """
   print 'Executing peer connection test.'
   client = Peer(debug_verbosity=1, debug_preamble='Peer Client:')
   server = Peer(debug_verbosity=1, debug_preamble='Peer Server:')
@@ -1869,6 +2048,9 @@ def test_ssl():
 
 
 def test_handshake():
+  """
+  Test a handshake between a peer and client.
+  """
   print 'Executing peer handshake test.'
   client = Peer(debug_verbosity=5, debug_preamble='Peer Client:')
   server = Peer(debug_verbosity=5, debug_preamble='Peer Server:')

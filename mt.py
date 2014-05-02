@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# This code is from https://github.com/sangeeths/merkle-tree
 
 import os
 import hashlib
